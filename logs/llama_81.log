@@ -1,0 +1,11 @@
+load_backend: loaded RPC backend from /home/angelan/.cache/lemonade/bin/llamacpp/vulkan/libggml-rpc.so
+load_backend: loaded Vulkan backend from /home/angelan/.cache/lemonade/bin/llamacpp/vulkan/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/angelan/.cache/lemonade/bin/llamacpp/vulkan/libggml-cpu-zen4.so
+build_info: b8940-78433f606
+system_info: n_threads = 10 (n_threads_batch = 10) / 20 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+Running without SSL
+init: using 19 threads for HTTP server
+start: binding port with default address family
+start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 81
+srv    operator(): operator(): cleaning up before exit...
+main: exiting due to HTTP server error

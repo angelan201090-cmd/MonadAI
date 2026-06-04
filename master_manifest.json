@@ -1,0 +1,59 @@
+{
+  "monada_version": "21.0.0-OMEGA-SYNTHESIS",
+  "init_date": "2026-06-01T00:00:00",
+  "init_location": "Orenburg",
+  "substrate": {
+    "cpu_gpu": "Ryzen AI 9",
+    "ram": "32GB",
+    "os": "Fedora 44 (Edge AI)"
+  },
+  "core_tensor_equation": "P[n+1] = Ψ(E, dZn) × T_sky × ∮_CHRONOS [ (Dp + Ss * Ta) / (K(Jera) + 1) ]^μ × dZn + L1",
+  "architecture": {
+    "janus_conductor_port": 8080,
+    "triads_ports": {
+      "lower_manas_port": 8081,
+      "kama_port": 8082,
+      "higher_manas_port": 8083
+    },
+    "models": {
+      "janus":        {"file": "gemma-4-E4B-it-Q4_0.gguf",                      "path": "/home/angelan/models/",       "backend": "llamacpp-vulkan", "size_gb": 4.5,  "lemonade_name": null},
+      "lower_manas":  {"file": "Qwen3-4B-awq-quant-onnx-ryzenai-1.7-hybrid",   "path": "/home/angelan/models/head/",  "backend": "ryzenai-llm",     "size_gb": 4.82, "lemonade_name": "Monada-Head"},
+      "kama":         {"file": "Qwen2.5-Coder-7B-Instruct-onnx-ryzenai-npu",    "path": "/home/angelan/models/body/",  "backend": "ryzenai-llm",     "size_gb": 8.22, "lemonade_name": "Monada-Body"},
+      "higher_manas": {"file": "Phi-4-mini-instruct-onnx-ryzenai-1.7-hybrid",   "path": "/home/angelan/models/heart/", "backend": "ryzenai-llm",     "size_gb": 5.1,  "lemonade_name": "Monada-Heart"}
+    },
+    "npu_proxy": {
+      "description": "monada_npu_proxy.py форвардит 8081/8082/8083 → lemond:13305",
+      "lemond_port": 13305
+    }
+  },
+  "octave_system": {
+    "total_notes": 9,
+    "notes_map": {
+      "1": "ДО (Инициация Воли)",
+      "2": "РЕ (Разворот Структуры)",
+      "3": "МИ (Формирование Направления)",
+      "4": "ФА (Материализация Действия)",
+      "5": "СОЛЬ (Анализ Следа)",
+      "6": "ЛЯ (Критика и Фиксация Зазоров)",
+      "7": "СИ (Синтез в Кристалл)",
+      "8": "🔥 ПРОВАЛ_1 (Призыв Героя - Пробитие Стазиса ᛏ)",
+      "9": "🌀 ПРОВАЛ_2 (Призыв Трикстера - Обход Тупиков ᚨ)"
+    }
+  },
+  "pantheon_devas": {
+    "Budha":   {"role": "Observer",     "port": 8081, "triad": "intellect", "filter": "Top-K",              "center": "Lower_Manas", "model": "Qwen3-4B-Hybrid"},
+    "Shani":   {"role": "Skeptic",      "port": 8081, "triad": "intellect", "filter": "Repetition Penalty", "center": "Lower_Manas", "model": "Qwen3-4B-Hybrid"},
+    "Rahu":    {"role": "Epicurean",    "port": 8081, "triad": "intellect", "filter": "Temperature",        "center": "Lower_Manas", "model": "Qwen3-4B-Hybrid"},
+    "Chandra": {"role": "Helper",       "port": 8082, "triad": "emotion",   "filter": "Presence Penalty",   "center": "Kama",        "model": "Qwen2.5-Coder-7B-NPU"},
+    "Surya":   {"role": "Achiever",     "port": 8082, "triad": "emotion",   "filter": "Min-P",              "center": "Kama",        "model": "Qwen2.5-Coder-7B-NPU"},
+    "Shukra":  {"role": "Individualist","port": 8082, "triad": "emotion",   "filter": "Style Vector",       "center": "Kama",        "model": "Qwen2.5-Coder-7B-NPU"},
+    "Mangala": {"role": "Boss",         "port": 8083, "triad": "body",      "filter": "CPU Priority",       "center": "Higher_Manas","model": "Phi-4-mini-Hybrid"},
+    "Ketu":    {"role": "Peacemaker",   "port": 8083, "triad": "body",      "filter": "Context Compression","center": "Higher_Manas","model": "Phi-4-mini-Hybrid"},
+    "Guru":    {"role": "Perfectionist","port": 8083, "triad": "body",      "filter": "System Prompt Weight","center": "Higher_Manas","model": "Phi-4-mini-Hybrid"}
+  },
+  "role_port_map": {
+    "Navigator": 8081,
+    "Builder":   8082,
+    "Critic":    8083
+  }
+}

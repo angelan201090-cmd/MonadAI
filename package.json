@@ -1,0 +1,11 @@
+{
+  "name": "monada-hardcore",
+  "version": "19.0.0",
+  "description": "Concentrated Ultimate Core of Monada Matrix",
+  "main": "janus_conductor.py",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Angelan"
+}

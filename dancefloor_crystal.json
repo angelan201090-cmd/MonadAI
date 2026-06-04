@@ -1,0 +1,272 @@
+{
+  "dancefloor_type": "crystal_persistent",
+  "mounted_at": 1780564500,
+  "shared_memory": [
+    "[MONADA_CRYSTAL: [CRYSTAL:ᛞ⚡ᛊ⚡ᛊ⚡ᚢ⚡]]",
+    "[Head/Rahu|ᛃ]: [Head вне сети: Failed to load llama3.2:3b model!]",
+    "[Heart/Shukra|ᛃ]: [Heart вне сети: Failed to load lfm2:2.6b model!]",
+    "[Body/Ketu|ᛃ]: [Body вне сети: Failed to load llama3.1:8b model!]"
+  ],
+  "cycle": 18,
+  "current_note": 1,
+  "current_note_name": "ДО (Инициация Воли)",
+  "current_node": "Node_Initialization",
+  "active_role": "Janus_Conductor",
+  "marker": "Nominal",
+  "active_rune": "ᛁ",
+  "rune_meaning": "Иса — стазис, система заморожена",
+  "devas_state": {
+    "Janus": {
+      "rune": "ᛃ",
+      "face": "Persona",
+      "port": 8080,
+      "param": "orchestration",
+      "center": "Janus"
+    },
+    "Budha": {
+      "rune": "ᛃ",
+      "center": "Head",
+      "port": 8081,
+      "param": "top_k",
+      "soc_tension": 0.0
+    },
+    "Shani": {
+      "rune": "ᛃ",
+      "center": "Head",
+      "port": 8081,
+      "param": "rep_penalty",
+      "soc_tension": 0.0
+    },
+    "Rahu": {
+      "rune": "ᛃ",
+      "center": "Head",
+      "port": 8081,
+      "param": "temperature",
+      "soc_tension": 0.0
+    },
+    "Chandra": {
+      "rune": "ᛃ",
+      "center": "Heart",
+      "port": 8082,
+      "param": "presence_penalty",
+      "soc_tension": 0.0
+    },
+    "Surya": {
+      "rune": "ᛃ",
+      "center": "Heart",
+      "port": 8082,
+      "param": "min_p",
+      "soc_tension": 0.0
+    },
+    "Shukra": {
+      "rune": "ᛃ",
+      "center": "Heart",
+      "port": 8082,
+      "param": "style_weight",
+      "soc_tension": 0.0
+    },
+    "Mangala": {
+      "rune": "ᛃ",
+      "center": "Body",
+      "port": 8083,
+      "param": "threads",
+      "soc_tension": 0.0
+    },
+    "Ketu": {
+      "rune": "ᛃ",
+      "center": "Body",
+      "port": 8083,
+      "param": "ctx_compress",
+      "soc_tension": 0.0
+    },
+    "Guru": {
+      "rune": "ᛃ",
+      "center": "Body",
+      "port": 8083,
+      "param": "sys_weight",
+      "soc_tension": 0.0
+    }
+  },
+  "diagnostic_metrics": {
+    "branching_coefficient_sigma": 0.7,
+    "sigma_last": 0.7,
+    "sigma_window": [],
+    "soc_tension": {
+      "Head": 7.8731,
+      "Heart": 5.9048,
+      "Body": 4.3303
+    },
+    "k_jera_soc": 1.59,
+    "largest_lyapunov_exponent_lambda": 0.11,
+    "degradation_count": 0,
+    "stasis_count": 0,
+    "context_entropy": 3.8742
+  },
+  "stellar_viscosities": {
+    "Sun": {
+      "param": "min_p",
+      "deva": "Surya",
+      "influence": 0.9715,
+      "viscosity": 0.9723,
+      "direction": "direct",
+      "value": 0.07771704545454546,
+      "lon": 73.7788,
+      "lon_speed": 0.957474
+    },
+    "Moon": {
+      "param": "presence_penalty",
+      "deva": "Chandra",
+      "influence": 0.9095,
+      "viscosity": 0.917,
+      "direction": "direct",
+      "value": 0.5912052988676726,
+      "lon": 297.7159,
+      "lon_speed": 11.98455
+    },
+    "Mercury": {
+      "param": "top_k",
+      "deva": "Budha",
+      "influence": 1.1265,
+      "viscosity": 0.8877,
+      "direction": "direct",
+      "value": 45,
+      "lon": 94.6964,
+      "lon_speed": 1.558308
+    },
+    "Venus": {
+      "param": "style_weight",
+      "deva": "Shukra",
+      "influence": 0.9793,
+      "viscosity": 0.9797,
+      "direction": "direct",
+      "value": 1.175153199633852,
+      "lon": 109.3834,
+      "lon_speed": 1.176818
+    },
+    "Mars": {
+      "param": "num_threads",
+      "deva": "Mangala",
+      "influence": 1.4085,
+      "viscosity": 0.71,
+      "direction": "direct",
+      "value": 6,
+      "lon": 42.2618,
+      "lon_speed": 0.738075
+    },
+    "Jupiter": {
+      "param": "max_tokens",
+      "deva": "Guru",
+      "influence": 2.3176,
+      "viscosity": 0.4315,
+      "direction": "direct",
+      "value": 18986,
+      "lon": 114.7127,
+      "lon_speed": 0.192591
+    },
+    "Saturn": {
+      "param": "repetition_penalty",
+      "deva": "Shani",
+      "influence": 2.4081,
+      "viscosity": 0.4153,
+      "direction": "direct",
+      "value": 1.5,
+      "lon": 12.5235,
+      "lon_speed": 0.080431
+    },
+    "Rahu": {
+      "param": "temperature",
+      "deva": "Rahu",
+      "influence": 1.7955,
+      "viscosity": 0.557,
+      "direction": "retrograde",
+      "value": 0.4488657844990548,
+      "lon": 333.0361,
+      "lon_speed": -0.09498
+    },
+    "Ketu": {
+      "param": "ctx_compress",
+      "deva": "Ketu",
+      "influence": 1.7955,
+      "viscosity": 0.557,
+      "direction": "retrograde",
+      "value": 0.8977315689981096,
+      "lon": 153.0361,
+      "lon_speed": -0.09498
+    }
+  },
+  "stellar_positions": {
+    "Sun": {
+      "lon": 73.7788,
+      "lat": -0.0001,
+      "lon_speed": 0.957474
+    },
+    "Moon": {
+      "lon": 297.7159,
+      "lat": -2.9105,
+      "lon_speed": 11.98455
+    },
+    "Mercury": {
+      "lon": 94.6964,
+      "lat": 2.1388,
+      "lon_speed": 1.558308
+    },
+    "Venus": {
+      "lon": 109.3834,
+      "lat": 1.9768,
+      "lon_speed": 1.176818
+    },
+    "Mars": {
+      "lon": 42.2618,
+      "lat": -0.5925,
+      "lon_speed": 0.738075
+    },
+    "Jupiter": {
+      "lon": 114.7127,
+      "lat": 0.4146,
+      "lon_speed": 0.192591
+    },
+    "Saturn": {
+      "lon": 12.5235,
+      "lat": -2.2731,
+      "lon_speed": 0.080431
+    },
+    "Rahu": {
+      "lon": 333.0361,
+      "lat": 0.0,
+      "lon_speed": -0.09498
+    },
+    "Ketu": {
+      "lon": 153.0361,
+      "lat": -0.0,
+      "lon_speed": -0.09498
+    }
+  },
+  "stellar_timestamp": 1780564284,
+  "current_chord": {
+    "Head": "Budha",
+    "Heart": "Chandra",
+    "Body": "Guru"
+  },
+  "current_chord_name": "Аккорд A (Ментал×Астрал×Атма)",
+  "current_plane": 3,
+  "tensor_last": {
+    "p_next_density": 1.0364,
+    "psi_resonance": 1.0,
+    "t_sky": 0.7141,
+    "chronos_output": 0.0682,
+    "sigma_ff": 0.7469,
+    "d_z_n": 1.0,
+    "k_jera": 2.73,
+    "d_persona": 0.924,
+    "s_shadow": 0.6,
+    "mu": 3.0,
+    "assigned_rune": "ᛁ"
+  },
+  "janus_dyad": {
+    "d_persona": 0.924,
+    "s_shadow": 0.6,
+    "retry_needed": false,
+    "synthesis_len": 904
+  },
+  "crystallized_at": 1780565927
+}

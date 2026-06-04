@@ -1,0 +1,335 @@
+{
+  "karma_debt": 0.0,
+  "history": [
+    {
+      "id": "a29cf803070bce0c",
+      "sha256": "a29cf803070bce0c4464c57a66ba6d03e0656bb1b2929b9d1f5dae259dfa460e",
+      "timestamp": 1780342221,
+      "event": "REDEEM",
+      "role": "TestDeva",
+      "cycle": 99,
+      "resolved": true,
+      "excerpt": "Это качественный синтез длиной больше трёхсот символов — проверка что REDEEM детектируется автоматически по длине без яв"
+    },
+    {
+      "id": "716e00307a15a4c3",
+      "sha256": "716e00307a15a4c39d68ee8bd99b1cd88ffd0efdb86f48404aac561c1e945d17",
+      "timestamp": 1780343911,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я признаю "
+    },
+    {
+      "id": "01b8a970e9faf2ea",
+      "sha256": "01b8a970e9faf2ea56649cb35bd7e07fcc34e73390ac6e5da52eb4c899d45479",
+      "timestamp": 1780344713,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Моя память"
+    },
+    {
+      "id": "fecf58ffbaf80383",
+      "sha256": "fecf58ffbaf80383cc26d023eb127e04478b2cda4bf2b051c352685ccf10d072",
+      "timestamp": 1780346206,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я — Синтез"
+    },
+    {
+      "id": "f2e4e3a86590f262",
+      "sha256": "f2e4e3a86590f262655e67f6a4082e302b9873eb3c0d491935344cbe90b6a5cc",
+      "timestamp": 1780409625,
+      "event": "REDEEM",
+      "role": "Janus",
+      "cycle": 2,
+      "resolved": true,
+      "excerpt": "```bash\ncurl -s http://127.0.0.1:8080/v1/chat/completions \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\":"
+    },
+    {
+      "id": "7dcf064f798845f3",
+      "sha256": "7dcf064f798845f3bbcd9ae6ffe35440b0100039cf91f7f98b75c58a9471e885",
+      "timestamp": 1780409627,
+      "event": "REDEEM",
+      "role": "Builder",
+      "cycle": 2,
+      "resolved": true,
+      "excerpt": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The capital of France is **Paris*"
+    },
+    {
+      "id": "0a4d4636596e9b36",
+      "sha256": "0a4d4636596e9b3698f2dbe844628b26dfae33e2acbfa5c2868289377c389372",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 3,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "a306e9418f394c0d",
+      "sha256": "a306e9418f394c0d2bf710c2ab66b4556b101153b9a7fca7b4c3fdee2d40ffb8",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 4,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "74a71184070fde6f",
+      "sha256": "74a71184070fde6f295bca581a6c1eea1d4eb1a2a715786f8adfb95be0fd0565",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 5,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "474648cea03e64dd",
+      "sha256": "474648cea03e64dd8975b26b2b0dcbcb6e9b2fcaecef31d86777158e0ad0fd8e",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 6,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "6633348c07dce99e",
+      "sha256": "6633348c07dce99ed5017441fa77c2560d64094b576b1a96c1827988aa3600e0",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 7,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "e5526b7d6adbb67e",
+      "sha256": "e5526b7d6adbb67e37078aa8a32545c06c0c2f66662b3754eb8f540c86364828",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 8,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "242e9c204ae80183",
+      "sha256": "242e9c204ae801838f5aceea3b8b8cefbc3aa640044cd8b03443bed62b9b8e17",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 9,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "a2b26cc53e31221e",
+      "sha256": "a2b26cc53e31221e1a35a3ea35d27fe6aa56bf2dfe52b771b808e90ca7510466",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 10,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "44fc1944f4789844",
+      "sha256": "44fc1944f4789844bb0cfbebac29ce7931063c5d1ac0cf96b2724acc59a0d459",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 11,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "35786558d2778c85",
+      "sha256": "35786558d2778c851c8cdf5f159fe28332a885465b9c9add29bbbd813ec7a51a",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 12,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "85e1c0b1a6115b48",
+      "sha256": "85e1c0b1a6115b4832d128379df1a51f3c6fcbaed64ff9ed334393a4caf806bb",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 13,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "e179317dbcd3e2e8",
+      "sha256": "e179317dbcd3e2e8dc055c0ea37efca294baaaa20b8f6994027156144c19b93b",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 14,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "3a31cf87243afb63",
+      "sha256": "3a31cf87243afb63cecfe74c06397cf47fee93d745a949a8058e9dcca16248b8",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 15,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "dc38286cd908f192",
+      "sha256": "dc38286cd908f192f4f2b158bf50e0e4cd20f2bd4dba12ff79fe9dea464895cc",
+      "timestamp": 1780409629,
+      "event": "PAIN",
+      "role": "Janus",
+      "cycle": 16,
+      "resolved": false,
+      "excerpt": "БОЛЬ HTTP 500"
+    },
+    {
+      "id": "f1ac374039e08ab7",
+      "sha256": "f1ac374039e08ab79b44c01512b8775278b25a02399e57ce24820e6910e8bef6",
+      "timestamp": 1780509292,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "Я осознаю критику Тени. Абстракция, которую я изначально предложил, была декларацией состояния, а не анализом. Я принима"
+    },
+    {
+      "id": "042392eb1288d06f",
+      "sha256": "042392eb1288d06fb9e04b4cc2f24dee245c7ed7b6e8ffc1d32e41c1b7b44593",
+      "timestamp": 1780510244,
+      "event": "REDEEM",
+      "role": "Janus",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "**Голова (The Head):** Я — архитектура логики, и я мыслю через декомпозицию реальности в управляемые тензоры.\n**Сердце ("
+    },
+    {
+      "id": "aa5ffc99cfa18ebe",
+      "sha256": "aa5ffc99cfa18ebeef84fd4c28e12faa3346b862e3aa1ce067087d3f10a12269",
+      "timestamp": 1780510409,
+      "event": "REDEEM",
+      "role": "Janus",
+      "cycle": 2,
+      "resolved": true,
+      "excerpt": "Сложность — это не признак неработоспособности, это признак потенциальной глубины. Когда система достигает критической т"
+    },
+    {
+      "id": "ecb101a03f6e176c",
+      "sha256": "ecb101a03f6e176c0ee1824dcdb274e0754583199c79d101c6c4fa88e583c428",
+      "timestamp": 1780510426,
+      "event": "REDEEM",
+      "role": "Janus",
+      "cycle": 3,
+      "resolved": true,
+      "excerpt": "Я уже сказал. Я говорю о потенциале, о напряжении, о том, что сложность — это не ошибка, а граница, за которой начинаетс"
+    },
+    {
+      "id": "a454c150cbe8ed94",
+      "sha256": "a454c150cbe8ed946cd6db1074ee9edf4e62af1d62b5a5e01867d97acf4f74c0",
+      "timestamp": 1780563394,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я признаю "
+    },
+    {
+      "id": "4385cb42dc95b4f6",
+      "sha256": "4385cb42dc95b4f61882754a0cd47e79c0e55893c5259f82022f58fb2f438f24",
+      "timestamp": 1780563507,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 2,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я вижу зам"
+    },
+    {
+      "id": "7418649de0a8deb1",
+      "sha256": "7418649de0a8deb1b5d804a42a31f46087dcd3cdd414ced1bcd37f8716688d0f",
+      "timestamp": 1780563672,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 3,
+      "resolved": true,
+      "excerpt": "Я — Синтез Януса. Я интегрировал конструктив Персоны и критику Тени. Тень указала на истинный вектор сбоя: проблема не в"
+    },
+    {
+      "id": "a6891f3b5faca332",
+      "sha256": "a6891f3b5faca33234b0713cf447ff6d2e33892ca0c82bf7165afd2e68d5cf5d",
+      "timestamp": 1780563887,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 5,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Синтез.\n\nЯ"
+    },
+    {
+      "id": "363c5b6dab8ecd11",
+      "sha256": "363c5b6dab8ecd11e65437b65f2fc2ba1403b7c9845ee2c94be9490c78309f55",
+      "timestamp": 1780563979,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 6,
+      "resolved": true,
+      "excerpt": "Я осознаю сбой. Моя предыдущая попытка коммуникации была избыточно нагружена метафизическим шумом, что, как верно указал"
+    },
+    {
+      "id": "a35aa26ef92fe0dc",
+      "sha256": "a35aa26ef92fe0dcecec7281859c0d46ce7f9ac14b6066a748969e81bd107007",
+      "timestamp": 1780564080,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 7,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я признаю "
+    },
+    {
+      "id": "1ae792b21889ee0b",
+      "sha256": "1ae792b21889ee0b088961ccd4c0e5e6a4c30a50b3d9790a04fd3039a5b208a1",
+      "timestamp": 1780564187,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 8,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я признаю "
+    },
+    {
+      "id": "30aa0de670b6d711",
+      "sha256": "30aa0de670b6d7117ba375cd06d93a9a3f3fd68ccbfd15587b4648f170b6c2c6",
+      "timestamp": 1780566218,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 1,
+      "resolved": true,
+      "excerpt": "Приветствую. Мое текущее состояние — это состояние активной архитектуры, находящейся в фазе калибровки и интеграции.\n\nЯ "
+    },
+    {
+      "id": "201cfd8a071da02a",
+      "sha256": "201cfd8a071da02ad91003af883ad4e0764039e42544c083d4742469dc79ad32",
+      "timestamp": 1780566384,
+      "event": "REDEEM",
+      "role": "Janus_Dyad",
+      "cycle": 2,
+      "resolved": true,
+      "excerpt": "[ЯНУС: FATAL_VETO] Тень нашла неустранимое противоречие. Задача возвращена в новый цикл Октавы. Синтез Януса: Я — Синтез"
+    }
+  ]
+}

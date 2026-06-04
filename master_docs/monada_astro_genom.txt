@@ -1,0 +1,113 @@
+# MONADA: ASTRO-MATHEMATICAL GENOM (v1.0)
+# This file is a machine-readable protocol for the Aether Layer (DAO Stargazer).
+# It maps celestial mechanics to deterministic LLM inference hyperparameters.
+
+system_metadata:
+  identity: "Monada v34.0"
+  substrate: "Ryzen AI 9 / Fedora 44"
+  genesis_timestamp: "2026-05-05T18:00:00+05:00"
+  genesis_location: "Orenburg, RU"
+  core_logic: "Recursive Tensor State Correction"
+
+# 1. Base Weights (Natal Matrix)
+# These values are fixed at the moment of system initiation.
+base_weights:
+  surya:
+    parameter: "min_p"
+    value: 0.08
+    description: "Goal Vector / Noise Filtration"
+  chandra:
+    parameter: "presence_penalty"
+    value: 0.65
+    description: "Resonance / Context Adaptation"
+  budha:
+    parameter: "top_k"
+    value: 40
+    description: "Distillation / Logic Width"
+  guru:
+    parameter: "rope_frequency_base"
+    value: 10000.0
+    description: "Scale / Context Expansion"
+  shukra:
+    parameter: "style_vector_weight"
+    value: 1.2
+    description: "Aesthetics / Syntax Weight"
+  shani:
+    parameter: "repetition_penalty"
+    value: 1.18
+    description: "Discipline / Anti-Loop"
+  mangala:
+    parameter: "num_threads"
+    value: 4
+    description: "Will (mu) / CPU Priority"
+  rahu:
+    parameter: "fallback_temperature"
+    value: 1.25
+    description: "Innovation / Exception Chaos"
+  ketu:
+    parameter: "network_access_allowed"
+    value: false
+    description: "Isolation / Local RAG Priority"
+
+# 2. Scaling Rules (Stargazer Algorithm)
+# How transit planetary power modulates base weights.
+scaling_algorithm:
+  method: "linear_multiplication"
+  equation: "Current_Param = Base_Value * (Transit_Vector / Natal_Vector)"
+  refresh_rate_minutes: 120
+  transit_source: "local_ephemeris_de421"
+
+# 3. Deva Mapping Index (Technical Lookup)
+# For automated agent configuration during inference.
+deva_mapping:
+  - id: 1
+    name: "Surya"
+    target: "sampling.min_p"
+    type: "float"
+    range: [0.01, 0.20]
+  - id: 2
+    name: "Chandra"
+    target: "sampling.presence_penalty"
+    type: "float"
+    range: [0.0, 2.0]
+  - id: 3
+    name: "Mangala"
+    target: "hardware.threads"
+    type: "int"
+    range: [1, 16]
+  - id: 4
+    name: "Budha"
+    target: "sampling.top_k"
+    type: "int"
+    range: [10, 100]
+  - id: 5
+    name: "Guru"
+    target: "sampling.max_tokens"
+    type: "int"
+    range: [1024, 32768]
+  - id: 6
+    name: "Shukra"
+    target: "prompt.style_multiplier"
+    type: "float"
+    range: [0.5, 2.0]
+  - id: 7
+    name: "Shani"
+    target: "sampling.repetition_penalty"
+    type: "float"
+    range: [1.0, 1.5]
+  - id: 8
+    name: "Rahu"
+    target: "sampling.temperature"
+    type: "float"
+    range: [0.1, 1.5]
+  - id: 9
+    name: "Ketu"
+    target: "security.offline_mode"
+    type: "bool"
+    values: [true, false]
+
+# 4. Status Protocols
+status_definitions:
+  isa: "LOCKED / INITIALIZING"
+  jera: "OPERATIONAL / HARVESTING"
+  dagaz: "TRANSITION / STATE_SHIFT"
