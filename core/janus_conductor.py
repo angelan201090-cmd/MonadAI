@@ -10,6 +10,7 @@ import subprocess
 import urllib.request
 import urllib.error
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from stellar_viscosity_calculator import get_stargazer
 from core.octave_fsm import OctaveFSM, CognitiveTensor
 from core.boundary import (
@@ -22,7 +23,7 @@ sys.path.append("/home/angelan/data/Monada-Hardcore")
 from core.soc_engine import (
     SOCEngine, NOTE_DEVA, NOTE_CENTER, state_rune,
     BLAVATSKY_PLANES, DEVA_PLANE, CHORD_NAMES, get_plane_info,
-    FOHATIC_PLANE_MAP, FOHATIC_SPIRAL_ORDER, ENNEA_STRESS_NEXT,
+    FOHATIC_PLANE_MAP, FOHATIC_SPIRAL_ORDER, FOHATIC_PHASES, ENNEA_STRESS_NEXT,
     SIGMA_LOW, SIGMA_HIGH,
 )
 
@@ -1314,131 +1315,152 @@ def conduct(raw_text: str) -> None:
         shared_ctx = _tensor.context
         _sys_log(f"[FSM] Shock #{_tensor.shock_count}: shared_ctx сброшен к якорю")
 
-    for _unit in firing_plan:
-        center = _unit["center"]
-        deva   = _unit["deva"]
-        octave = _unit["octave"]
-        pid, plane_name, _ = get_plane_info(deva)
-        _sys_log(f"[SOC] ▶ План {pid} {plane_name[:14]} [{octave}] | {center} → {deva} | "
-                 f"z={soc.tensions[center]:.3f}")
+    # ── Группировка firing_plan по фазам параллельного зажигания ────────────────
+    if FOHATIC_MODE:
+        _s2p = {s: pi for pi, sl in enumerate(FOHATIC_PHASES) for s in sl}
+        _pm: dict[int, list] = {}
+        for _u in firing_plan:
+            _pm.setdefault(_s2p.get(_u["plane"], 0), []).append(_u)
+        firing_phases = [_pm[k] for k in sorted(_pm)]
+    else:
+        firing_phases = [[_u] for _u in firing_plan]
 
-        # Роль центра + октавно-плановое уточнение (фохатическая спираль)
-        base_role = deva_roles.get(center, "")
-        if FOHATIC_MODE:
-            seed = DEVA_LEAN_SEED.get(deva, "узел Монады")
-            role_prompt = (
-                f"{base_role}\n[План {plane_name}, {octave} октава. "
-                f"Грань {deva}: {seed}]"
+    # ── Зажигание по фазам ────────────────────────────────────────────────────
+    for _phase_units in firing_phases:
+        # Снимок ctx и fired_set — все параллельные вызовы фазы видят один контекст
+        _ctx_snap   = shared_ctx
+        _fired_snap = set(fired_set)
+
+        # ── Подготовка аргументов вызовов (последовательно) ──────────────────
+        _phase_calls: list[tuple] = []
+        for _unit in _phase_units:
+            _c   = _unit["center"]
+            _d   = _unit["deva"]
+            _oct = _unit["octave"]
+            _pid, _pname, _ = get_plane_info(_d)
+            _sys_log(f"[SOC] ▶ {_pname[:14]} [{_oct}] | {_c} → {_d} | "
+                     f"z={soc.tensions[_c]:.3f}")
+
+            _base_role = deva_roles.get(_c, "")
+            if FOHATIC_MODE:
+                _seed = DEVA_LEAN_SEED.get(_d, "узел Монады")
+                _rp   = f"{_base_role}\n[{_pname}, {_oct}. {_d}: {_seed}]"
+            else:
+                _rp = _base_role
+
+            _subtask = subtasks.get(_c, raw_text)
+            _ft = (
+                f"{task_anchor}"
+                f"[ПЛАН_ЯНУСА]: {manifest_plan}\n"
+                f"[ТВОЯ_МИКРОЗАДАЧА]: {_subtask}\n\n"
+                f"<SHARED_EXPERIENCE>\n{_ctx_snap}\n</SHARED_EXPERIENCE>"
             )
+            if _c in _fired_snap:
+                _prev_a = prev_artifact.get(_c, "")
+                _ft = (
+                    "[РЕФИНАЛЬНАЯ ОКТАВА] НЕ повторяй предыдущий артефакт дословно. "
+                    "Уточни, проверь или углуби его — добавь недостающее. "
+                    "Если добавить нечего — верни одну строку: ᛁ\n"
+                    f"[ТВОЙ_ПРЕДЫДУЩИЙ_АРТЕФАКТ]: {_prev_a[:400]}\n\n"
+                ) + _ft
+            if current_note in (8, 9) or stasis:
+                _ft = (
+                    "[СВЕРХУСИЛИЕ ᛏ: только исполнимый код/действие, "
+                    "абсолютные пути, без рассуждений]\n"
+                ) + _ft
+            _phase_calls.append((_c, _d, _oct, _pid, _pname, _ft, _rp))
+
+        # ── Параллельный LLM-запуск фазы (разные порты → реальный параллелизм) ─
+        _rune_ctx_phase = rune_ctx   # снимок для передачи в потоки
+        _k_phase        = soc.k_jera
+
+        def _do_call(args, _rc=_rune_ctx_phase, _k=_k_phase):
+            _c, _d, _oct, _pid, _pname, _ft, _rp = args
+            return args, _call_deva_soc(
+                center=_c, deva=_d, task=_ft, rune_ctx=_rc,
+                note_name=note_name, k_jera=_k,
+                current_note=current_note, role_prompt=_rp,
+            )
+
+        if len(_phase_calls) == 1:
+            _phase_results = [_do_call(_phase_calls[0])]
         else:
-            role_prompt = base_role
+            with ThreadPoolExecutor(max_workers=len(_phase_calls)) as _pool:
+                _phase_results = list(_pool.map(_do_call, _phase_calls))
 
-        # Каждый центр видит ТОЛЬКО свою микрозадачу + краткий план Януса
-        subtask = subtasks.get(center, raw_text)
-        full_task = (
-            f"{task_anchor}"
-            f"[ПЛАН_ЯНУСА]: {manifest_plan}\n"
-            f"[ТВОЯ_МИКРОЗАДАЧА]: {subtask}\n\n"
-            f"<SHARED_EXPERIENCE>\n{shared_ctx}\n</SHARED_EXPERIENCE>"
-        )
-        # №4: рефинальная октава — центр уже стрелял в этом такте. Не повторять
-        # артефакт дословно (верхняя октава дублировала нижнюю), а уточнить/проверить.
-        if center in fired_set:
-            _prev = prev_artifact.get(center, "")
-            full_task = (
-                "[РЕФИНАЛЬНАЯ ОКТАВА] НЕ повторяй предыдущий артефакт дословно. "
-                "Уточни, проверь или углуби его — добавь недостающее. "
-                "Если добавить нечего — верни одну строку: ᛁ\n"
-                f"[ТВОЙ_ПРЕДЫДУЩИЙ_АРТЕФАКТ]: {_prev[:400]}\n\n"
-            ) + full_task
-        if current_note in (8, 9) or stasis:
-            full_task = (
-                "[СВЕРХУСИЛИЕ ᛏ: только исполнимый код/действие, "
-                "абсолютные пути, без рассуждений]\n"
-            ) + full_task
+        # ── Последовательная обработка результатов фазы ──────────────────────
+        for (_c, _d, _oct, _pid, _pname, _ft, _rp), artifact in _phase_results:
+            center = _c
+            deva   = _d
+            octave = _oct
 
-        artifact = _call_deva_soc(
-            center=center, deva=deva,
-            task=full_task, rune_ctx=rune_ctx,
-            note_name=note_name, k_jera=soc.k_jera,
-            current_note=current_note,
-            role_prompt=role_prompt,
-        )
+            # SOC-разряд — РАЗ за такт на центр
+            if center not in fired_set:
+                energy = soc.fire(center)
+                fired_set.add(center)
+                fired_pairs.append((_artifact_quality(artifact), energy))
+            else:
+                energy = 0.0
 
-        # SOC-разряд — РАЗ за такт на центр (даже если центр отрабатывает 2 октавы
-        # в фохатической спирали), иначе σ/тензор раздуваются вдвое.
-        if center not in fired_set:
-            energy = soc.fire(center)
-            fired_set.add(center)
-            fired_pairs.append((_artifact_quality(artifact), energy))
-        else:
-            energy = 0.0   # вторая октава того же центра — рефинальная, без разряда
+            artifact_rune = (
+                "ᛁ" if (any(k in artifact for k in ("ᛁ", "ISA", "БОЛЬ")) or not artifact)
+                else "ᛃ"
+            )
 
-        artifact_rune = (
-            "ᛁ" if (any(k in artifact for k in ("ᛁ", "ISA", "БОЛЬ")) or not artifact)
-            else "ᛃ"
-        )
+            # Эннеаграмма: БОЛЬ маршрутизируется вперёд по гексаграмме
+            if artifact_rune == "ᛁ":
+                _stress_target = soc.stress_route(deva, 0.35)
+                if _stress_target:
+                    _sys_log(f"⟶ Стресс {deva}→{_stress_target} +0.35 (эннеаграмма)")
 
-        # Эннеаграмма: БОЛЬ маршрутизируется вперёд по гексаграмме 1-4-2-8-5-7
-        if artifact_rune == "ᛁ":
-            _stress_target = soc.stress_route(deva, 0.35)
-            if _stress_target:
-                _sys_log(f"⟶ Стресс {deva}→{_stress_target} +0.35 (эннеаграмма)")
+            print(f"\n\033[1m[{center} / {deva}]\033[0m "
+                  f"σ={soc.sigma():.2f} | E={energy:.2f} | {artifact_rune}")
+            print(artifact)
+            print("─" * 50)
 
-        print(f"\n\033[1m[{center} / {deva}]\033[0m "
-              f"σ={soc.sigma():.2f} | E={energy:.2f} | {artifact_rune}")
-        print(artifact)
-        print("─" * 50)
+            state.setdefault("devas_state", {})[deva] = {
+                "center": center, "rune": artifact_rune,
+                "note": current_note, "energy": round(energy, 3),
+            }
 
-        state.setdefault("devas_state", {})[deva] = {
-            "center": center, "rune": artifact_rune,
-            "note": current_note, "energy": round(energy, 3),
-        }
+            if "вне сети" in artifact and len(artifact) > 200:
+                artifact_rec = artifact[:200] + "...]"
+            else:
+                artifact_rec = artifact
+            record = f"[{center}/{deva}|{artifact_rune}]: {artifact_rec}"
+            shared_ctx += f"\n{record}\n"
+            new_artifacts.append(record)
+            prev_artifact[center] = artifact_rec
 
-        # Оффлайн-ошибки обрезаем: они могут содержать тысячи символов мусора (lemond 500)
-        if "вне сети" in artifact and len(artifact) > 200:
-            artifact_rec = artifact[:200] + "...]"
-        else:
-            artifact_rec = artifact
-        record = f"[{center}/{deva}|{artifact_rune}]: {artifact_rec}"
-        shared_ctx += f"\n{record}\n"
-        new_artifacts.append(record)
-        prev_artifact[center] = artifact_rec   # №4: для рефинальной октавы центра
+            if center in _at.get("centers", {}):
+                _at["centers"][center]["done"]     = True
+                _at["centers"][center]["artifact"] = artifact_rec[:500]
 
-        # Отмечаем подзадачу выполненной в active_task
-        if center in _at.get("centers", {}):
-            _at["centers"][center]["done"]     = True
-            _at["centers"][center]["artifact"] = artifact_rec[:500]
+            if center in EXEC_CENTERS and artifact_rune != "ᛁ":
+                blocks = re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL)
+                if not blocks and center not in executed_centers:
+                    _bash_lines = [
+                        l.strip() for l in artifact.splitlines()
+                        if l.strip() and not l.strip().startswith(("#", "```", "{", "}", '"'))
+                    ]
+                    _bash_script = "\n".join(
+                        l for l in _bash_lines
+                        if l.split()[0].lstrip("!") in _BASH_SAFE_COMMANDS
+                        or l.split()[0].lstrip("!").split("/")[-1] in _BASH_SAFE_COMMANDS
+                    ).strip()
+                    if _bash_script and len(_bash_script) < 600:
+                        blocks = [_bash_script]
+                        _sys_log(f"⚙️  RC3-заземление: bash из артефакта «{_bash_script[:60]}»")
+                for block in blocks:
+                    res = execute_bash(block, deva)
+                    rec = f"[{deva} Exec]: {res}"
+                    shared_ctx += f"\n{rec}\n"
+                    new_artifacts.append(rec)
+                if blocks:
+                    executed_centers.add(center)
 
-        # Телесный центр исполняет bash если нет признаков Isa
-        if center in EXEC_CENTERS and artifact_rune != "ᛁ":
-            blocks = re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL)
-            # RC3-fix: если Body не выдал bash-блок, извлекаем bash-строки из самого
-            # артефакта (не из subtasks — там может быть проза после Phase-1 рефактора).
-            # №4: НЕ заземляем на рефинальной октаве если центр уже исполнил bash.
-            if not blocks and center not in executed_centers:
-                _bash_lines = [
-                    l.strip() for l in artifact.splitlines()
-                    if l.strip() and not l.strip().startswith(("#", "```", "{", "}", '"'))
-                ]
-                _bash_script = "\n".join(
-                    l for l in _bash_lines
-                    if l.split()[0].lstrip("!") in _BASH_SAFE_COMMANDS
-                    or l.split()[0].lstrip("!").split("/")[-1] in _BASH_SAFE_COMMANDS
-                ).strip()
-                if _bash_script and len(_bash_script) < 600:
-                    blocks = [_bash_script]
-                    _sys_log(f"⚙️  RC3-заземление: bash из артефакта «{_bash_script[:60]}»")
-            for block in blocks:
-                res = execute_bash(block, deva)
-                rec = f"[{deva} Exec]: {res}"
-                shared_ctx += f"\n{rec}\n"
-                new_artifacts.append(rec)
-            if blocks:
-                executed_centers.add(center)
-
-        state["current_node"] = f"Node_{center}_{deva}"
-        state["active_role"]  = deva
+            state["current_node"] = f"Node_{center}_{deva}"
+            state["active_role"]  = deva
 
     # ── FSM: обновляем тензор по итогам такта и сохраняем shock_count ────────
     _tensor.artifacts   = list(new_artifacts)
