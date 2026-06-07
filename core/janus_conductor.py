@@ -22,7 +22,7 @@ sys.path.append("/home/angelan/data/Monada-Hardcore")
 from core.soc_engine import (
     SOCEngine, NOTE_DEVA, NOTE_CENTER, state_rune,
     BLAVATSKY_PLANES, DEVA_PLANE, CHORD_NAMES, get_plane_info,
-    FOHATIC_PLANE_MAP, FOHATIC_SPIRAL_ORDER,
+    FOHATIC_PLANE_MAP, FOHATIC_SPIRAL_ORDER, ENNEA_STRESS_NEXT,
     SIGMA_LOW, SIGMA_HIGH,
 )
 
@@ -1271,8 +1271,11 @@ def conduct(raw_text: str) -> None:
     # ── Сборка плана зажигания: спираль Фохата ИЛИ классический аккорд ────────
     firing_plan: list[dict] = []
     if FOHATIC_MODE:
-        _sys_log("ᚱ Фохатическая спираль: " +
-                 " → ".join(f"пл.{p}" for p in FOHATIC_SPIRAL_ORDER) + " → Янус(Ади)")
+        _spiral_labels = " → ".join(
+            f"{FOHATIC_PLANE_MAP[p][1]}({FOHATIC_PLANE_MAP[p][2]})"
+            for p in FOHATIC_SPIRAL_ORDER
+        )
+        _sys_log(f"ᚱ Фохат-гексаграмма: {_spiral_labels} → Янус(СИ)")
         for plane in FOHATIC_SPIRAL_ORDER:
             center, deva, octave = FOHATIC_PLANE_MAP[plane]
             firing_plan.append({"center": center, "deva": deva,
@@ -1375,6 +1378,12 @@ def conduct(raw_text: str) -> None:
             "ᛁ" if (any(k in artifact for k in ("ᛁ", "ISA", "БОЛЬ")) or not artifact)
             else "ᛃ"
         )
+
+        # Эннеаграмма: БОЛЬ маршрутизируется вперёд по гексаграмме 1-4-2-8-5-7
+        if artifact_rune == "ᛁ":
+            _stress_target = soc.stress_route(deva, 0.35)
+            if _stress_target:
+                _sys_log(f"⟶ Стресс {deva}→{_stress_target} +0.35 (эннеаграмма)")
 
         print(f"\n\033[1m[{center} / {deva}]\033[0m "
               f"σ={soc.sigma():.2f} | E={energy:.2f} | {artifact_rune}")

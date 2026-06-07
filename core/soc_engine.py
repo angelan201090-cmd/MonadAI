@@ -106,19 +106,40 @@ CHORD_NAMES = {
 # план 7 (Ади/Логос) = Янус (синтез-диада, растворение Кету).
 # Поток запроса спирально восходит сквозь планы, выход плана N → вход N+1.
 FOHATIC_PLANE_MAP: dict[int, tuple[str, str, str]] = {
-    # план: (центр, Дэва, октава)
-    1: ("Body",  "Mangala", "низшая"),   # Физический    — прямое действие
-    2: ("Heart", "Chandra", "низшая"),   # Астральный    — желание/эмоция
-    3: ("Head",  "Budha",   "низшая"),   # Ментальный    — логика/синтаксис
-    4: ("Heart", "Surya",   "высшая"),   # Буддхический  — интуиция
-    5: ("Body",  "Guru",    "высшая"),   # Атмический    — воля-синтез
-    6: ("Head",  "Shani",   "высшая"),   # Монадический  — карма/память
-    # план 7 (Ади) = Янус: Ketu-растворение в финальной диаде Персона/Тень/Синтез
+    # слот: (центр, Дэва, нота) — порядок = гексаграмма эннеаграммы 1-4-2-8-5-7
+    1: ("Head",  "Shani",   "DO"),     # тип 1 — внимание, самовоспоминание
+    2: ("Heart", "Chandra", "RE"),     # тип 4 — эмоциональный отклик
+    3: ("Heart", "Shukra",  "MI"),     # тип 2 — форма, эстетика
+    4: ("Body",  "Mangala", "FA"),     # тип 8 — решительное действие
+    5: ("Head",  "Budha",   "SOL"),    # тип 5 — каузальный анализ
+    6: ("Head",  "Rahu",    "LA"),     # тип 7 — дивергентный поиск
+    # слот 7 (СИ/Ади) = Янус: Surya(3/Персона)+Ketu(6/Тень)+Guru(9/Синтез) — Треугольник
 }
 
-# Порядок спирали: swap-эффективный — центр отрабатывает обе свои октавы подряд,
-# минимизируя перезагрузку NPU (Body·Body → Heart·Heart → Head·Head → Янус).
-FOHATIC_SPIRAL_ORDER: list[int] = [1, 5, 2, 4, 3, 6]
+# Порядок спирали = путь гексаграммы эннеаграммы 1-4-2-8-5-7.
+# Стрессовый вектор каждого дэвы всегда указывает на СЛЕДУЮЩИЙ слот → маршрут вперёд.
+FOHATIC_SPIRAL_ORDER: list[int] = [1, 2, 3, 4, 5, 6]
+
+# ── Эннеаграмма: центр каждого Дэвы ──────────────────────────────────────────
+DEVA_CENTER: dict[str, str] = {
+    "Mangala": "Body",  "Ketu":  "Body",  "Guru":   "Body",
+    "Chandra": "Heart", "Surya": "Heart", "Shukra": "Heart",
+    "Budha":   "Head",  "Shani": "Head",  "Rahu":   "Head",
+}
+
+# Стрессовый вектор: при БОЛИ тензия нарастает у следующего дэвы в гексаграмме.
+# Гексаграмма 1-4-2-8-5-7 и Треугольник 3-6-9 (Персона-Тень-Синтез).
+ENNEA_STRESS_NEXT: dict[str, str] = {
+    "Shani":   "Chandra",   # 1 → 4
+    "Chandra": "Shukra",    # 4 → 2
+    "Shukra":  "Mangala",   # 2 → 8
+    "Mangala": "Budha",     # 8 → 5
+    "Budha":   "Rahu",      # 5 → 7
+    "Rahu":    "Shani",     # 7 → 1 (замкнуть / Янус)
+    "Surya":   "Guru",      # 3 → 9 (Персона → Синтез)
+    "Guru":    "Ketu",      # 9 → 6 (Синтез → Тень)
+    "Ketu":    "Surya",     # 6 → 3 (Тень → Персона)
+}
 
 
 def get_plane_info(deva: str) -> tuple[int, str, str]:
@@ -288,6 +309,18 @@ class SOCEngine:
     def get_rune(self) -> str:
         """Руна текущего состояния SOC."""
         return state_rune(self.sigma(), max(self.tensions.values(), default=0.0))[0]
+
+    def stress_route(self, deva: str, pain_weight: float = 0.35) -> str:
+        """Маршрутизация БОЛИ вперёд по гексаграмме эннеаграммы. Возвращает имя цели."""
+        target_deva   = ENNEA_STRESS_NEXT.get(deva, "")
+        target_center = DEVA_CENTER.get(target_deva, "")
+        if target_center and target_center in self.tensions:
+            self.tensions[target_center] = min(
+                Z_CRITICAL * 1.5,
+                self.tensions[target_center] + pain_weight,
+            )
+            self._save()
+        return target_deva
 
     def _auto_regulate(self):
         """Удерживает σ ≈ 1.0 через K(Jera)."""
