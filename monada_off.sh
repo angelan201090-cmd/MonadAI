@@ -1,6 +1,6 @@
 #!/bin/bash
 WORK_DIR="/home/angelan/data/Monada-Hardcore"
-DANCEFLOOR="$WORK_DIR/dancefloor"
+DANCEFLOOR="/mnt/dancefloor"
 
 echo "[ᛉ] Тотальное очищение Алтарей и аннигиляция процессов..."
 
@@ -13,10 +13,11 @@ if mountpoint -q "$DANCEFLOOR" 2>/dev/null; then
 fi
 
 pkill -9 -f "llama-server"
-pkill -9 -f "monada_terminal_core.py"
-pkill -9 -f "monada_npu_proxy.py"
+pkill -9 -f "monada_terminal.py"
+pkill -9 -f "podsoznanie_daemon.py"
+pkill -9 -f "inbox_watcher.py"
 pkill -9 -f "lemond"
-sudo fuser -k 8080/tcp 8081/tcp 8082/tcp 8083/tcp 8088/tcp 13305/tcp > /dev/null 2>&1
+sudo fuser -k 8081/tcp 8082/tcp 8083/tcp 8084/tcp 8085/tcp 8086/tcp 13305/tcp > /dev/null 2>&1
 sleep 1
 echo "[ᛁ] Монада переведена в состояние Пралайи."
 notify-send "Monada Core" "Система полностью выключена. Пралайя. Кристалл сохранён."

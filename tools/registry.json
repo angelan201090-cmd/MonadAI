@@ -1,0 +1,80 @@
+[
+  {
+    "name": "expand_glyph",
+    "category": "memory",
+    "description": "Развернуть глиф-слово кодекса в полный смысл. Использование: expand_glyph ᚱᚠ",
+    "command": "python3 -c \"import sys; sys.path.insert(0,'/home/angelan/data/Monada-Hardcore'); from glyph_codex import GlyphCodex; print(GlyphCodex().expand('$1'))\""
+  },
+  {
+    "name": "check_processes",
+    "category": "observe",
+    "description": "Статус всех процессов Монады",
+    "command": "ps aux | grep -E 'llama-server|lemond|monada' | grep -v grep | awk '{print $2, $11, $12}'"
+  },
+  {
+    "name": "check_ports",
+    "category": "observe",
+    "description": "Активность портов Монады (8080-8083, 13305)",
+    "command": "ss -tlnp | grep -E '808[0-3]|13305'"
+  },
+  {
+    "name": "check_janus",
+    "category": "observe",
+    "description": "Здоровье Януса (порт 8080)",
+    "command": "curl -s --max-time 3 http://localhost:8080/v1/models | python3 -m json.tool 2>/dev/null | grep '\"id\"' || echo 'Янус недоступен'"
+  },
+  {
+    "name": "check_lemond_models",
+    "category": "observe",
+    "description": "Модели lemond (NPU-Триада)",
+    "command": "curl -s --max-time 3 http://localhost:13305/v1/models | python3 -m json.tool 2>/dev/null | grep '\"id\"' || echo 'lemond недоступен'"
+  },
+  {
+    "name": "check_field_state",
+    "category": "observe",
+    "description": "Текущее SOC-состояние Танцпола",
+    "command": "cat /home/angelan/data/Monada-Hardcore/dancefloor/field_state.json | python3 -m json.tool 2>/dev/null | grep -E 'cycle|note|sigma|rune|karma|tension' | head -20"
+  },
+  {
+    "name": "check_lemond_log",
+    "category": "observe",
+    "description": "Последние события lemond (NPU-лог)",
+    "command": "tail -15 /home/angelan/data/Monada-Hardcore/logs/lemond.log"
+  },
+  {
+    "name": "check_ram",
+    "category": "observe",
+    "description": "Использование RAM",
+    "command": "free -m | awk 'NR==2{printf \"RAM: %sMB used / %sMB total (%.0f%%)\", $3, $2, $3*100/$2}'"
+  },
+  {
+    "name": "check_disk",
+    "category": "observe",
+    "description": "Место на диске (data-раздел)",
+    "command": "df -h /home/angelan/data | awk 'NR==2{print \"Disk: \"$3\" used / \"$2\" total (\"$5\")\"}'  "
+  },
+  {
+    "name": "check_inbox",
+    "category": "observe",
+    "description": "Содержимое inbox (очередь задач)",
+    "command": "ls -lht /home/angelan/data/Monada-Hardcore/inbox/ | head -10"
+  },
+  {
+    "name": "check_bash_results",
+    "category": "observe",
+    "description": "Последние результаты выполнения bash",
+    "command": "cat /home/angelan/data/Monada-Hardcore/dancefloor/bash_results.json 2>/dev/null | python3 -m json.tool | head -30 || echo 'нет результатов'"
+  },
+  {
+    "name": "restart_proxy",
+    "category": "control",
+    "description": "Перезапуск NPU-прокси Триады",
+    "command": "pkill -f monada_npu_proxy.py 2>/dev/null; sleep 1; cd /home/angelan/data/Monada-Hardcore && python3 monada_npu_proxy.py &"
+  },
+  {
+    "name": "show_warmup_log",
+    "category": "observe",
+    "description": "Лог прогрева Триады",
+    "command": "tail -20 /home/angelan/data/Monada-Hardcore/logs/warmup.log"
+  }
+]

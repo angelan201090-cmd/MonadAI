@@ -9,9 +9,10 @@ import json
 import os
 import time
 
-MONADA_ROOT = "/home/angelan/data/Monada-Hardcore"
-DANCEFLOOR  = os.path.join(MONADA_ROOT, "dancefloor")
-CRYSTAL     = os.path.join(MONADA_ROOT, "dancefloor_crystal.json")
+MONADA_ROOT       = "/home/angelan/data/Monada-Hardcore"
+DANCEFLOOR        = "/mnt/dancefloor"
+CRYSTAL           = os.path.join(MONADA_ROOT, "dancefloor_crystal.json")
+GLYPH_PERSISTENT  = os.path.join(MONADA_ROOT, "glyph_codex_persistent.json")
 
 RUNE_JERA = "ᛃ"
 
@@ -117,6 +118,8 @@ def build_state(crystal: dict) -> dict:
     }
 
 
+import shutil
+
 def main():
     os.makedirs(DANCEFLOOR, exist_ok=True)
     crystal = load_crystal()
@@ -125,6 +128,10 @@ def main():
     field_path = os.path.join(DANCEFLOOR, "field_state.json")
     with open(field_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+
+    if os.path.exists(GLYPH_PERSISTENT):
+        shutil.copy2(GLYPH_PERSISTENT, os.path.join(DANCEFLOOR, "glyph_codex.json"))
+        print(f"[ᛃ] Кодекс глифов восстановлен из {GLYPH_PERSISTENT}")
 
     prev_cycle = crystal.get("cycle", 0)
     restored   = f"нота={state['current_note']} σ-окно={len(state['diagnostic_metrics']['sigma_window'])} mem={len(state['shared_memory'])}"

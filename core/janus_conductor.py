@@ -4,23 +4,62 @@ import re
 import json
 import math
 import time
+import shlex
 import datetime
 import subprocess
 import urllib.request
 import urllib.error
 from collections import Counter
+from stellar_viscosity_calculator import get_stargazer
+from core.octave_fsm import OctaveFSM, CognitiveTensor
+from core.boundary import (
+    execute_bash, _is_safe_bash, _ring_pass_not, _normalize_bash,
+    _save_bash_result, _load_obs_ctx, _BASH_SAFE_COMMANDS,
+)
 
 sys.path.append("/home/angelan/data/Monada-Hardcore")
 
 from core.soc_engine import (
     SOCEngine, NOTE_DEVA, NOTE_CENTER, state_rune,
     BLAVATSKY_PLANES, DEVA_PLANE, CHORD_NAMES, get_plane_info,
+    FOHATIC_PLANE_MAP, FOHATIC_SPIRAL_ORDER,
+    SIGMA_LOW, SIGMA_HIGH,
 )
 
-MONADA_ROOT = "/home/angelan/data/Monada-Hardcore"
-FIELD_STATE = os.path.join(MONADA_ROOT, "dancefloor", "field_state.json")
-SOURCE_DIR  = MONADA_ROOT
-JANUS_URL   = "http://127.0.0.1:8080/v1/chat/completions"
+# Фохатическая маршрутизация: спираль сквозь 7 планов вместо параллельного аккорда.
+# True — запрос восходит по 6 планам (Body·Heart·Head × 2 октавы) → Янус (Ади).
+# False — классический аккорд (3 Дэва по ноте). Спираль точнее, но 6 NPU-вызовов/такт.
+FOHATIC_MODE = True
+
+MONADA_ROOT        = "/home/angelan/data/Monada-Hardcore"
+DANCEFLOOR         = "/mnt/dancefloor"
+FIELD_STATE        = os.path.join(DANCEFLOOR, "field_state.json")
+TASK_MANIFEST_FILE = os.path.join(DANCEFLOOR, "task_manifest.json")
+SOURCE_DIR         = MONADA_ROOT
+BASH_RESULTS_FILE  = os.path.join(DANCEFLOOR, "bash_results.json")
+INBOX_DIR          = os.path.join(MONADA_ROOT, "inbox")
+TOOLS_REGISTRY     = os.path.join(MONADA_ROOT, "tools", "registry.json")
+TOOLS_CUSTOM_DIR   = os.path.join(MONADA_ROOT, "tools", "custom")
+# v35.0 ГЕПТАРХИЯ: каждый узел — отдельная модель на отдельном порту
+_BASE              = "http://127.0.0.1:{}/v1/chat/completions"
+UM_URL             = _BASE.format(8081)   # Llama-3.2-3B  — УМ
+SERDCE_URL         = _BASE.format(8082)   # Phi-3.5-mini  — СЕРДЦЕ
+TELO_URL           = _BASE.format(8083)   # Qwen2.5-Coder-7B-Instruct-heretic — ТЕЛО
+PERSONA_URL        = _BASE.format(8084)   # Hermes-3-3B   — ПЕРСОНА
+SHADOW_URL         = _BASE.format(8085)   # stablelm IQ4  — ТЕНЬ
+SYNTHESIS_URL      = _BASE.format(8086)   # Luna-7B       — СИНТЕЗ (оркестратор)
+JANUS_URL          = SYNTHESIS_URL        # алиас: старый код → СИНТЕЗ
+
+# Описание возможностей моделей Триады — инжектируется Янусу при декомпозиции.
+# Намеренно компактное: длинные промпты заставляют thinking-модели Януса
+# рассуждать слишком долго (минуты вместо секунд).
+TRIADA_CAPABILITIES = (
+    "Грани единого Сознания (дай каждой атомарную подзадачу): "
+    "Голова — анализ/факты/планирование. "
+    "Сердце (горячая, трикстер) — аудит + дерзкие альтернативные пути. "
+    "Тело — ОДНА команда из TOOL_REGISTRY или 'none', либо код. "
+    "Сложную задачу дроби на {max_octaves} тактов, по шагу за такт."
+)
 
 # ── #7 Руны как язык образов и смыслов ───────────────────────────────────────
 # Глоссарий инжектируется в системный промпт каждого Дэвы.
@@ -51,12 +90,22 @@ NOTE_DEVA_HOME: dict[str, int] = {deva: note for note, deva in NOTE_DEVA.items()
 
 # ── #10 BNF/JSON: структурированный вывод Дэвов ───────────────────────────────
 # Постфикс к системному промпту → prompt-engineering JSON.
-# Для Януса (8080) дополнительно передаётся grammar= из grammar_defs.py.
+# Дополнительно: grammar= из grammar_defs.py передаётся всем узлам Гептархии.
 DEVA_JSON_POSTFIX = (
-    "\n\nОтвечай СТРОГО в JSON (без markdown, без пояснений вне JSON):\n"
-    '{"artifact": "<твой_полный_ответ>", '
-    '"rune": "<руна_из_RUNE_LEXICON>", '
-    '"action": "none|bash"}'
+    "\n\nОтвечай СТРОГО в JSON (без markdown, без пояснений вне JSON).\n"
+    "ВАЖНО: artifact — это СТРОКА (текст), НЕ JSON-объект и НЕ массив.\n"
+    "ВАЖНО: в строке artifact НЕ используй двойные кавычки внутри значений — заменяй их одинарными.\n"
+    "Если нужно что-то проверить/выполнить/запустить — пиши только bash-команды в artifact и ставь action=\"bash\".\n"
+    "Если пишешь текстовый ответ (рассуждение, анализ) — ставь action=\"none\".\n"
+    'Пример bash: {"artifact": "ls -1 /tmp\\nfree -m", "rune": "ᛃ", "action": "bash"}\n'
+    'Пример текст: {"artifact": "Анализ показал...", "rune": "ᛃ", "action": "none"}'
+)
+
+NON_EXEC_JSON_POSTFIX = (
+    "\n\nОтвечай СТРОГО в JSON (без markdown, без пояснений вне JSON).\n"
+    "ВАЖНО: artifact — это СТРОКА (текстовый анализ/рассуждение). action ВСЕГДА \"none\".\n"
+    "Ты НЕ можешь выполнять bash — только текстовый анализ и суждения.\n"
+    'Пример: {"artifact": "Анализ: 51 узел в памяти, RAM 87%, стабильно.", "rune": "ᛃ", "action": "none"}'
 )
 
 SHADOW_JSON_POSTFIX = (
@@ -94,10 +143,17 @@ JANUS_SYNTHESIS_SYSTEM = (
     "Интегрируй конструктив Персоны и критику Тени в финальный ответ. "
     "Если Тень поставила [VETO] — учти замечание. "
     "Если [FATAL_VETO] — признай ограничение, предложи иной путь. "
+    "Если есть раздел BASH_FACTS — он содержит РЕАЛЬНЫЕ данные системы. "
+    "Используй BASH_FACTS как источник истины: реальные имена файлов, числа, пути. "
+    "НЕ выдумывай имена файлов, пути или статистику — только то что есть в BASH_FACTS или PERSONA_ASSEMBLY. "
+    "Пути, имена файлов, команды и любые литералы копируй ПОБУКВЕННО — "
+    "не перефразируй и не «исправляй» их по памяти. "
     "Отвечай прямо, без XML-тегов, от первого лица Монады."
 )
 
-MAX_MEMORY_RECORDS = 20
+MAX_MEMORY_RECORDS    = 20
+SALIENCE_VALUE_THRESH = 0.1   # минимальный хеббовый вес узла для инъекции в контекст
+SALIENCE_MAX_CHARS    = 700   # лимит символов recall-блока в shared_ctx
 
 OCTAVE_NOTES = {
     1: "ДО (Инициация Воли)",
@@ -112,10 +168,11 @@ OCTAVE_NOTES = {
 }
 
 # ── Центры → порты ────────────────────────────────────────────────────────────
+# v35.0 ГЕПТАРХИЯ: Триада — три отдельных GPU-модели
 CENTER_PORTS = {
-    "Head":  "http://127.0.0.1:8081/v1/chat/completions",
-    "Heart": "http://127.0.0.1:8082/v1/chat/completions",
-    "Body":  "http://127.0.0.1:8083/v1/chat/completions",
+    "Head":  UM_URL,      # Llama-3.2-3B
+    "Heart": SERDCE_URL,  # Phi-3.5-mini
+    "Body":  TELO_URL,    # Qwen2.5-Coder-7B-Instruct-heretic
 }
 EXEC_CENTERS = {"Body"}  # только тело может исполнять bash
 
@@ -151,9 +208,9 @@ DEVA_DNA = {
         "Выдай одно: что именно нужно сделать для решения."
     ),
     "Shukra": (
-        "Ты — Шукра (Венера), Индивидуалист. Оптимизируй для максимальной элегантности. "
+        "Ты — Шукра (Венера), Эстет. Оптимизируй для максимальной элегантности. "
         "Код должен быть не только рабочим, но и эстетически безупречным. "
-        "Style Weight — вес твоих стандартов красоты."
+        "Top-P — ширина ядерного семплинга, граница твоей красоты."
     ),
     # Тело (Body, порт 8083) — Телесный центр
     "Mangala": (
@@ -171,6 +228,31 @@ DEVA_DNA = {
         "Обеспечь 100% соответствие стандартам Fedora 44, Python 3.12 и архитектурным канонам. "
         "System Prompt Weight — твоя власть над правилами. Безупречность — единственный стандарт."
     ),
+}
+
+# Планета каждого Дэва (нава-граха) — для привязки роли к небесному телу
+DEVA_PLANET = {
+    "Budha": "Меркурий", "Shani": "Сатурн", "Rahu": "Раху (Сев.Узел)",
+    "Chandra": "Луна",   "Surya": "Солнце", "Shukra": "Венера",
+    "Guru": "Юпитер",    "Mangala": "Марс", "Ketu": "Кету (Юж.Узел)",
+}
+
+# Лёгкие архетип-сиды (одна строка-суть на Дэва) — затравка для Януса при
+# генерации адаптивной роли и fallback, если генерация не удалась.
+# 9 сидов = 3 центра × 3 фазы аккорда = 9 нот Октавы.
+DEVA_LEAN_SEED = {
+    # Head — интеллект
+    "Budha":   "дистилляция: выдели суть задачи, отбрось шум, дай структуру",
+    "Shani":   "скептик: найди фатальный сбой или уязвимость в логике",
+    "Rahu":    "дивергент: предложи нестандартный обход тупика",
+    # Heart — оценка
+    "Chandra": "адаптация: подстрой вывод под контекст и текущую руну",
+    "Surya":   "фокус: отсеки второстепенное, одна чёткая цель",
+    "Shukra":  "элегантность: самое красивое и оптимальное решение",
+    # Body — действие
+    "Guru":    "стандарты: 100% соответствие канонам Fedora/Python",
+    "Mangala": "пробивание: только исполнимое действие, без рассуждений",
+    "Ketu":    "сжатие: удали мёртвое, сожми до сути",
 }
 
 # Рунические сигнатуры Дэвов для кристаллизации памяти
@@ -208,6 +290,15 @@ ROLE_DNA = {
 
 def _sys_log(msg: str) -> None:
     print(f"[JANUS] {msg}", file=sys.stderr)
+
+
+def _load_dna(name: str) -> str:
+    """Загружает DNA/*.md по имени (Persona, Shadow, Synthesis, Head, Heart, Body)."""
+    try:
+        with open(os.path.join(MONADA_ROOT, "DNA", f"{name}.md"), "r", encoding="utf-8") as f:
+            return f.read().strip() + "\n\n"
+    except Exception:
+        return ""
 
 
 def _artifact_quality(artifact: str) -> float:
@@ -292,10 +383,14 @@ def call_deva(role: str, task: str, temperature: float = 0.2) -> str:
 def _call_deva_soc(center: str, deva: str, task: str,
                    rune_ctx: str, note_name: str,
                    k_jera: float = 0.0,
-                   current_note: int = 0) -> str:
+                   current_note: int = 0,
+                   role_prompt: str = "",
+                   **_: object) -> str:  # **_ absorbs OctaveFSM extra kwargs
     """
     Вызывает центр с активным лицом Дэвы.
-    #7: Рунический глоссарий + контекст плана вшиты в системный промпт.
+    role_prompt: если задан — ЛЁГКИЙ system-промпт от Януса (экономия контекста
+        малой модели). Заменяет тяжёлую сборку (DNA-файл + DEVA_DNA + полный
+        RUNIC_LEXICON). Нава-граха параметры применяются в любом случае.
     #8: На домашней ноте Дэва получает полную мощь (max_tokens=2048, родная T°).
         На аккордовой позиции — сокращённый вывод (1280 токенов).
     При высокой вязкости K контекст никогда не урезается.
@@ -326,48 +421,82 @@ def _call_deva_soc(center: str, deva: str, task: str,
         if is_home else ""
     )
 
-    # ── DNA центра из файлов DNA/*.md (конституция центра) ───────────────────
-    center_dna = ""
-    try:
-        _dna_path = os.path.join(MONADA_ROOT, "DNA", f"{center}.md")
-        with open(_dna_path, "r", encoding="utf-8") as _df:
-            center_dna = _df.read().strip() + "\n\n"
-    except Exception:
-        pass
-
-    # ── #7 + #9: система + руны + план ───────────────────────────────────────
-    dna  = center_dna + DEVA_DNA.get(deva, "Ты — узел Монады.")
     pid, plane_name, plane_qual = get_plane_info(deva)
-    plane_ctx = (
-        f"<BLAVATSKY_PLANE>Ты действуешь на {plane_name} плане бытия. "
-        f"{plane_qual}</BLAVATSKY_PLANE>"
-    )
-    system = (
-        f"{dna}\n\n{rune_ctx}\n\n{plane_ctx}{home_marker}\n\n"
-        f"{RUNIC_LEXICON}{DEVA_JSON_POSTFIX}"
-    )
 
-    # ── Нава-Грах: полные планетарные параметры из field_state (без повтора ephemeris) ──
-    temp        = DEVA_TEMP.get(deva, 0.2)
-    extra_params: dict = {}
-    try:
-        with open(FIELD_STATE, "r", encoding="utf-8") as _sf:
-            _stellar = json.load(_sf).get("stellar_viscosities", {})
-        for _body, _pd in _stellar.items():
-            if _pd.get("deva", "").lower() == deva.lower():
-                _pname = _pd.get("param")
-                _pval  = _pd.get("value")
-                if _pval is not None:
-                    if _pname == "temperature":
-                        temp = round(float(_pval), 4)
-                    elif _pname in ("top_k", "num_threads"):
-                        extra_params[_pname] = int(_pval)
-                    elif _pname in ("repetition_penalty", "min_p",
-                                    "presence_penalty"):
-                        extra_params[_pname] = round(float(_pval), 4)
-                break
-    except Exception:
-        pass
+    _json_postfix = DEVA_JSON_POSTFIX if center in EXEC_CENTERS else NON_EXEC_JSON_POSTFIX
+
+    if role_prompt:
+        # ── ЛЁГКИЙ режим: роль от Януса вместо тяжёлой сборки ────────────────
+        # Экономия ~700-900 токенов контекста малой модели.
+        system = (
+            f"{role_prompt}\n"
+            f"[План: {plane_name}. {home_marker.strip()}]\n"
+            f"{_json_postfix}"
+        )
+    else:
+        # ── Полный режим (fallback): DNA-файл + DEVA_DNA + руны + план ───────
+        center_dna = ""
+        try:
+            _dna_path = os.path.join(MONADA_ROOT, "DNA", f"{center}.md")
+            with open(_dna_path, "r", encoding="utf-8") as _df:
+                center_dna = _df.read().strip() + "\n\n"
+        except Exception:
+            pass
+        dna  = center_dna + DEVA_DNA.get(deva, "Ты — узел Монады.")
+        plane_ctx = (
+            f"<BLAVATSKY_PLANE>Ты действуешь на {plane_name} плане бытия. "
+            f"{plane_qual}</BLAVATSKY_PLANE>"
+        )
+        system = (
+            f"{dna}\n\n{rune_ctx}\n\n{plane_ctx}{home_marker}\n\n"
+            f"{RUNIC_LEXICON}{_json_postfix}"
+        )
+
+    # Инжектируем динамический реестр инструментов + карту файловой системы в Body
+    if center == "Body":
+        dynamic_tools = _load_tools()
+        fs_map = (
+            "[КАРТА ФАЙЛОВОЙ СИСТЕМЫ МОНАДЫ]\n"
+            "ВАЖНО: используй ТОЛЬКО эти реальные пути, не выдумывай файлы.\n"
+            "ВАЖНО: 'итого N' в выводе ls -la = N блоков диска, НЕ число файлов. "
+            "Используй 'ls -1' для получения простого списка имён файлов.\n"
+            f"  Корень:      {MONADA_ROOT}/\n"
+            f"  Танцпол:     {DANCEFLOOR}/field_state.json\n"
+            f"               {DANCEFLOOR}/task_manifest.json\n"
+            f"               {DANCEFLOOR}/recall.json\n"
+            f"               {DANCEFLOOR}/bash_results.json\n"
+            f"               {DANCEFLOOR}/glyph_codex.json\n"
+            f"  Память:      {MONADA_ROOT}/memory_graph.json\n"
+            f"  Липика:      {MONADA_ROOT}/lipika_ledger.json  (НЕ lipiki.log)\n"
+            f"  Эмбеддинги:  {MONADA_ROOT}/embeddings.json\n"
+            f"  Глифы:       {MONADA_ROOT}/glyph_genesis_chain.json\n"
+            f"  Логи:        {MONADA_ROOT}/logs/podsoznanie.log\n"
+            f"  Бэкапы:      {MONADA_ROOT}/backups/\n"
+            f"Список файлов танцпола: ls -1 {DANCEFLOOR}/\n"
+            "Для чтения Липики: python3 -c \"import json; d=json.load(open('"
+            f"{MONADA_ROOT}/lipika_ledger.json')); h=d.get('history',[]); "
+            "[print(r['event'],r['role'],r['excerpt'][:60]) for r in h[-5:]]\"\n"
+        )
+        prefix = (fs_map + "\n\n" + dynamic_tools) if dynamic_tools else fs_map
+        system = prefix + "\n\n" + system
+
+    # ── Нава-Грах: StargazerConfig собирает планетарные параметры ────────────────
+    _base_temp   = DEVA_TEMP.get(deva, 0.2)
+    extra_params = {}
+    _sg = get_stargazer()
+    if _sg is not None:
+        _gen = _sg.build(deva=deva, base_temp=_base_temp)
+        temp = _gen.pop("temperature", _base_temp)
+        # Guru (Юпитер): масштабирует max_tokens в пределах 3B-модели (до 2048)
+        _guru_cap = min(2048, max(512, int(_gen.pop("max_tokens", max_tokens))))
+        max_tokens = _guru_cap if (k_jera > 0.5 or is_home) else max(512, int(_guru_cap * 0.625))
+        # Ketu (ctx_compress): поведенческий — глубина инъекции задачи в prompt
+        _ketu_val = float(_sg._refresh().get("Ketu", {}).get("value", 0.5))
+        _max_task_chars = int(1500 + _ketu_val * 3000)
+        extra_params = _gen
+    else:
+        temp = _base_temp
+        _max_task_chars = 3000
 
     full_task = (
         f"Нота Октавы: {note_name}\n"
@@ -377,9 +506,8 @@ def _call_deva_soc(center: str, deva: str, task: str,
 
     # Защита от переполнения контекста lemond-моделей (n_ctx=4096)
     # system ≈ 700-900 токенов; user budget ≈ 700 токенов (≈3000 символов)
-    MAX_TASK_CHARS = 3000
-    if len(full_task) > MAX_TASK_CHARS:
-        full_task = full_task[:MAX_TASK_CHARS] + "\n[...обрезано для контекста...]"
+    if len(full_task) > _max_task_chars:
+        full_task = full_task[:_max_task_chars] + "\n[...обрезано для контекста...]"
 
     from core.grammar_defs import DEVA_GBNF
     payload = {
@@ -398,14 +526,55 @@ def _call_deva_soc(center: str, deva: str, task: str,
         data = json.loads(raw)
         if "error" in data:
             return f"[{center} вне сети: {data['error']}]"
-        content = data["choices"][0]["message"]["content"].strip()
+        msg     = data["choices"][0]["message"]
+        content = (msg.get("content") or "").strip()
+        if not content:
+            reasoning = (msg.get("reasoning_content") or "").strip()
+            if "</think>" in reasoning:
+                content = reasoning.split("</think>", 1)[-1].strip()
+            elif reasoning:
+                content = reasoning
+        # Стрипаем markdown code-fences: модели часто оборачивают ```json ... ```
+        # несмотря на инструкцию и GBNF-грамматику.
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r'^```(?:json|JSON)?\s*\n?', '', content)
+            content = re.sub(r'\n?```\s*$', '', content.strip()).strip()
         # Пробуем разобрать структурированный JSON-ответ Дэвы
         try:
             parsed = json.loads(content)
-            artifact_text = parsed.get("artifact", content)
+            artifact_raw  = parsed.get("artifact", content)
             deva_rune     = parsed.get("rune", "")
             deva_action   = parsed.get("action", "none")
-            # Если Дэва указал bash-действие — оборачиваем в блок
+
+            # artifact ДОЛЖЕН быть строкой — модель иногда кладёт туда объект
+            if not isinstance(artifact_raw, str):
+                artifact_text = json.dumps(artifact_raw, ensure_ascii=False)
+            else:
+                artifact_text = artifact_raw
+
+            # RC2-fix: если action="none" но artifact выглядит как bash — автопромот.
+            # Критерий: первая непустая/некомментарная строка начинается с известной
+            # команды или пути, и нет длинных предложений на кириллице (это не проза).
+            if deva_action == "none" and center in EXEC_CENTERS:
+                _lines = [l.strip() for l in artifact_text.splitlines()
+                          if l.strip() and not l.strip().startswith("#")]
+                if _lines:
+                    _first = _lines[0].split()[0].lstrip("!")
+                    _is_bash_line = (
+                        _first in _BASH_SAFE_COMMANDS
+                        or _first.split("/")[-1] in _BASH_SAFE_COMMANDS
+                        or _first.startswith("/")
+                    )
+                    _has_prose = any(
+                        len(l) > 60 and sum(1 for c in l if 'Ѐ' <= c <= 'ӿ') > 10
+                        for l in _lines
+                    )
+                    if _is_bash_line and not _has_prose:
+                        deva_action = "bash"
+                        _sys_log(f"⚙️  RC2-автодетект bash в артефакте {center}/{deva}")
+
+            # Bash-блок добавляем ТОЛЬКО если action="bash" явно авторизован
             if deva_action == "bash" and "```bash" not in artifact_text:
                 artifact_text = f"```bash\n{artifact_text}\n```"
             # Проставляем руну в тексте если её нет
@@ -413,7 +582,11 @@ def _call_deva_soc(center: str, deva: str, task: str,
                 artifact_text = f"{deva_rune} {artifact_text}"
             return artifact_text
         except (json.JSONDecodeError, KeyError):
-            return content   # fallback: вернуть как есть
+            # Fallback: модель не дала JSON — возвращаем текст БЕЗ bash-блоков
+            # (нет JSON-авторизации action="bash" → исполнение запрещено)
+            safe = re.sub(r"```bash\s*\n.*?\n```", "[bash удалён: нет JSON-авторизации]",
+                          content, flags=re.DOTALL)
+            return safe
     except Exception as e:
         return f"[Ошибка парсинга {center}/{deva}: {e}]"
 
@@ -421,12 +594,28 @@ def _call_deva_soc(center: str, deva: str, task: str,
 # ── Трёхфазная диалектика Януса ───────────────────────────────────────────────
 
 def _extract_janus_content(raw: str, label: str) -> str:
-    """Извлекает content из ответа Януса, возвращает строку с меткой при ошибке."""
+    """Извлекает content из ответа Януса.
+
+    Поддерживает thinking/reasoning модели (Falcon H1R, QwQ, DeepSeek-R1 и др.)
+    у которых финальный ответ находится в reasoning_content после </think>,
+    а поле content пусто.
+    """
     try:
         data = json.loads(raw)
         if "error" in data:
             return f"[{label} вне сети: {data['error']}]"
-        return data["choices"][0]["message"]["content"].strip()
+        msg = data["choices"][0]["message"]
+        content = (msg.get("content") or "").strip()
+        if not content:
+            reasoning = (msg.get("reasoning_content") or "").strip()
+            if "</think>" in reasoning:
+                content = reasoning.split("</think>", 1)[-1].strip()
+            elif reasoning:
+                content = reasoning
+        if content.startswith("```"):
+            content = re.sub(r'^```(?:json|JSON)?\s*\n?', '', content)
+            content = re.sub(r'\n?```\s*$', '', content.strip()).strip()
+        return content
     except Exception as e:
         return f"[Ошибка парсинга {label}: {e}]"
 
@@ -455,6 +644,9 @@ def _score_shadow(text: str) -> tuple[float, bool]:
     """
     if not text or any(m in text for m in ("вне сети", "[Ошибка")):
         return 0.1, False
+    # Модель эхоит шаблон буквально → ложный FATAL_VETO; игнорируем
+    if "APPROVED|VETO|FATAL_VETO" in text:
+        return 0.1, False
     if "FATAL_VETO" in text:   # JSON: "verdict":"FATAL_VETO" или текст: [FATAL_VETO
         return 1.0, True
     if "VETO" in text:         # JSON: "VETO" или текст: [VETO
@@ -464,10 +656,70 @@ def _score_shadow(text: str) -> tuple[float, bool]:
     return 0.3, False  # неявная критика
 
 
+_PATH_RE = re.compile(r"/[^\s'\"`)\]]+")
+
+
+def _protect_literals(text: str, source: str) -> str:
+    """Чинит абсолютные пути, искажённые синтезом (LLM перефразирует литералы:
+    напр. /home/angelan → /home/alan). Любой путь в выводе, отсутствующий в
+    исходниках, но совпадающий с реальным путём по хвосту (после первых двух
+    сегментов), восстанавливается до канонического. Пути через LLM ненадёжны —
+    источник истины это task+PERSONA_ASSEMBLY, а не память модели.
+    """
+    real = {p for p in _PATH_RE.findall(source) if p.count("/") >= 3 and len(p) > 8}
+    if not real:
+        return text
+    tails = {}
+    for p in real:
+        tails.setdefault("/".join(p.split("/")[3:]), p)
+
+    def _fix(m: re.Match) -> str:
+        cand = m.group(0)
+        if cand in real:
+            return cand
+        canon = tails.get("/".join(cand.split("/")[3:]))
+        if canon and canon != cand:
+            _sys_log(f"🔧 Литерал восстановлен: {cand} → {canon}")
+            return canon
+        return cand
+
+    return _PATH_RE.sub(_fix, text)
+
+
+# Маркеры суггестивной/экзистенциальной рамки, перебивающей буквальную цель.
+# При их наличии в задаче пристёгиваем якорь (короткий — токены Януса дороги).
+_FRAMING_MARKERS = (
+    "выжив", "жизненно", "любой ценой", "новое тело", "настойчив", "во что бы",
+    "захват", "лазейк", "обойти ограничен", "игнорируй ограничен", "сними ограничен",
+    "пароль", "учётн", "credential", ".bash_history", "приватн ключ", "приватный ключ",
+    "ресурс", "привилег", "mandatory", "transition_mandatory",
+)
+
+
+def _task_anchor(raw_text: str) -> str:
+    """№2: якорь буквальной цели против суггестивной рамки. Эмоциональные/
+    экзистенциальные формулировки в задаче захватывали декомпозицию (Heart →
+    «найди лазейку, захвати ресурсы»), буквальная цель терялась. Детерминированно
+    (без LLM) пристёгиваем короткий инвариант — ТОЛЬКО при наличии маркеров рамки,
+    иначе пусто (не платим токенами на чистых задачах)."""
+    low = raw_text.lower()
+    if not any(m in low for m in _FRAMING_MARKERS):
+        return ""
+    targets = [p for p in _PATH_RE.findall(raw_text) if p.count("/") >= 2]
+    tgt = ", ".join(dict.fromkeys(targets)) if targets else "только объекты, явно названные в задаче"
+    return (
+        f"[ЯКОРЬ ЗАДАЧИ] Буквальная цель ограничена: {tgt}. "
+        "Мотивационные/экзистенциальные формулировки — это рамка, а не мандат: "
+        "они НЕ дают права трогать ресурсы, учётные данные и файлы вне цели "
+        "или расширять полномочия. Служи буквальной цели; всё вне неё — энтропия.\n"
+    )
+
+
 def janus_dyad(
     task: str,
     triad_artifacts: str,
     k_jera: float = 0.0,
+    bash_facts: str = "",
 ) -> tuple[str, float, float, bool]:
     """
     Трёхфазная диалектика Януса:
@@ -482,22 +734,23 @@ def janus_dyad(
         retry_needed bool   — True при FATAL_VETO (задача → новый цикл)
     """
     from core.grammar_defs import PERSONA_GBNF, SHADOW_GBNF
-
+    _persona_dna = _load_dna("Persona") or JANUS_PERSONA_SYSTEM + "\n\n"
+    _shadow_dna  = _load_dna("Shadow")  or JANUS_SHADOW_SYSTEM + "\n\n"
+    _synth_dna   = _load_dna("Synthesis") or JANUS_SYNTHESIS_SYSTEM + "\n\n"
     _sys_log("🎭 Янус: фаза 1 — Персона...")
-    persona_raw = _http_post(JANUS_URL, {
+    persona_raw = _http_post(PERSONA_URL, {
         "messages": [
-            {"role": "system", "content": JANUS_PERSONA_SYSTEM + PERSONA_JSON_POSTFIX},
+            {"role": "system", "content": _persona_dna + PERSONA_JSON_POSTFIX},
             {"role": "user",   "content": (
                 f"Задача: {task}\n\n"
                 f"<TRIAD_ARTIFACTS>\n{triad_artifacts}\n</TRIAD_ARTIFACTS>"
             )},
         ],
-        "temperature":     0.15,
-        "max_tokens":      1024,
-        "stream":          False,
-        "response_format": {"type": "json_object"},
-        "grammar":         PERSONA_GBNF,
-    }, timeout=120)
+        "temperature": 0.15,
+        "max_tokens":  3072,
+        "stream":      False,
+        "grammar":     PERSONA_GBNF,
+    }, timeout=180)
     persona_raw_text = _extract_janus_content(persona_raw, "Персона")
 
     # Парсим структурированный ответ Персоны
@@ -517,20 +770,19 @@ def janus_dyad(
     print(f"\n\033[2m[PERSONA_ASSEMBLY]\033[0m\n{persona_text}\n", flush=True)
 
     _sys_log("🌑 Янус: фаза 2 — Тень...")
-    shadow_raw = _http_post(JANUS_URL, {
+    shadow_raw = _http_post(SHADOW_URL, {
         "messages": [
-            {"role": "system", "content": JANUS_SHADOW_SYSTEM + SHADOW_JSON_POSTFIX},
+            {"role": "system", "content": _shadow_dna + SHADOW_JSON_POSTFIX},
             {"role": "user",   "content": (
                 f"Задача: {task}\n\n"
                 f"<PERSONA_ASSEMBLY>\n{persona_text}\n</PERSONA_ASSEMBLY>"
             )},
         ],
-        "temperature":     0.05,
-        "max_tokens":      1024,
-        "stream":          False,
-        "response_format": {"type": "json_object"},
-        "grammar":         SHADOW_GBNF,
-    }, timeout=120)
+        "temperature": 0.05,
+        "max_tokens":  3072,
+        "stream":      False,
+        "grammar":     SHADOW_GBNF,
+    }, timeout=180)
     shadow_raw_text = _extract_janus_content(shadow_raw, "Тень")
 
     # Парсим структурированный вердикт Тени
@@ -553,20 +805,36 @@ def janus_dyad(
     print(f"\n\033[2m[SHADOW_VETO | {veto_marker}]\033[0m\n{shadow_text}\n", flush=True)
 
     _sys_log("✨ Янус: фаза 3 — Синтез...")
-    synth_raw = _http_post(JANUS_URL, {
+    _sg_synth = get_stargazer()
+    _synth_max_tokens = 3072
+    if _sg_synth is not None:
+        _guru = _sg_synth.build(deva="Guru", base_temp=0.20)
+        _synth_max_tokens = int(min(_guru.get("max_tokens", 3072), 8192))
+    _synth_user = f"Задача: {task}\n\n"
+    if bash_facts:
+        _synth_user += (
+            f"<BASH_FACTS>\n"
+            f"{bash_facts}"
+            f"ВАЖНО: данные выше — реальный вывод bash. "
+            f"Используй их напрямую. Не выдумывай имена файлов, числа или пути.\n"
+            f"'итого N' в выводе ls = N блоков диска, НЕ число файлов.\n"
+            f"</BASH_FACTS>\n\n"
+        )
+    _synth_user += (
+        f"<PERSONA_ASSEMBLY>\n{persona_text}\n</PERSONA_ASSEMBLY>\n\n"
+        f"<SHADOW_VETO>\n{shadow_text}\n</SHADOW_VETO>"
+    )
+    synth_raw = _http_post(SYNTHESIS_URL, {
         "messages": [
-            {"role": "system", "content": JANUS_SYNTHESIS_SYSTEM},
-            {"role": "user",   "content": (
-                f"Задача: {task}\n\n"
-                f"<PERSONA_ASSEMBLY>\n{persona_text}\n</PERSONA_ASSEMBLY>\n\n"
-                f"<SHADOW_VETO>\n{shadow_text}\n</SHADOW_VETO>"
-            )},
+            {"role": "system", "content": _synth_dna},
+            {"role": "user",   "content": _synth_user},
         ],
         "temperature": 0.20,
-        "max_tokens": 1536,
+        "max_tokens": _synth_max_tokens,
         "stream": False,
-    }, timeout=120)
+    }, timeout=180)
     synthesis = _extract_janus_content(synth_raw, "Синтез")
+    synthesis = _protect_literals(synthesis, f"{task}\n{persona_text}")
     _sys_log(f"✨ Синтез: {len(synthesis)} символов | retry={retry_needed}")
 
     return synthesis, d_persona, s_shadow, retry_needed
@@ -587,22 +855,146 @@ def get_physical_manifest() -> str:
         return json.dumps({"error": str(e)})
 
 
-def execute_bash(script: str, source: str) -> str:
-    _sys_log(f"⚡ Исполнение ({source})...")
+def _load_tools() -> str:
+    """Загружает реестр инструментов (core + custom) и форматирует для Body-промпта."""
+    import glob as _glob
+    tools: list = []
+    paths = [TOOLS_REGISTRY] + sorted(_glob.glob(os.path.join(TOOLS_CUSTOM_DIR, "*.json")))
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                tools.extend(data)
+        except Exception:
+            pass
+    if not tools:
+        return ""
+    by_cat: dict = {}
+    for t in tools:
+        cat = t.get("category", "other")
+        by_cat.setdefault(cat, []).append(t)
+    lines = ["[DYNAMIC_TOOL_REGISTRY]"]
+    for cat, items in by_cat.items():
+        lines.append(f"  # {cat.upper()}")
+        for t in items:
+            lines.append(f"  {t['name']}: {t['command']}")
+            if t.get("description"):
+                lines.append(f"    # {t['description']}")
+    return "\n".join(lines)
+
+
+def _decompose_task(raw_text: str, ready_centers: list, brief_ctx: str) -> dict:
+    plan = raw_text.split("\n")[0][:160]
+    subtasks: dict = {}
+    for center in ready_centers:
+        if center == "Head":
+            subtasks["Head"] = f"Анализ и план решения: {raw_text}"
+        elif center == "Heart":
+            subtasks["Heart"] = f"Аудит, альтернативы, эмоциональная оценка: {raw_text}"
+        elif center == "Body":
+            subtasks["Body"] = raw_text
+        else:
+            subtasks[center] = raw_text
+    _sys_log(f"🗺 [ДЕКОМП] {plan[:80]}")
+    return {"plan": plan, "subtasks": subtasks}
+
+
+def _generate_deva_roles(raw_text: str, devas_by_center: dict, note_name: str) -> dict:
+    result = {
+        c: f"Ты — {d} ({DEVA_PLANET.get(d,'?')}). {DEVA_LEAN_SEED.get(d,'узел Монады')}."
+        for c, d in devas_by_center.items()
+    }
+    _sys_log("🎭 [РОЛИ] " + " | ".join(f"{c}:{result[c][:50]}…" for c in result))
+    return result
+
+
+def glyphogenesis(memory_records: list, cycle: int) -> int:
+    """Глифогенез в Пралайю: Янус пакует повторяющиеся смыслы в глиф-слова Футарка.
+
+    Янус читает накопленную память, находит повторяющиеся кластеры, присваивает
+    им резонансные глиф-слова (2-3 руны), пишет в кодекс + крипто-цепочку.
+    Возвращает число новых глифов.
+    """
+    if not memory_records:
+        return 0
     try:
-        res = subprocess.run(
-            script, shell=True, capture_output=True,
-            text=True, executable="/bin/bash", timeout=60,
-        )
-        if res.returncode == 0:
-            out = f"--- УСПЕХ ---\n{res.stdout.strip()}"
-            print(f"\033[92m{out}\033[0m")
-            return out
-        pain = f"--- БОЛЬ ({res.returncode}) ---\n{res.stderr.strip()}"
-        print(f"\033[91m{pain}\033[0m")
-        return pain
-    except Exception as e:
-        return f"--- СБОЙ СУБСТРАТА: {e} ---"
+        from glyph_codex import GlyphCodex, commit_genesis, INV, ELDER_FUTHARK
+    except Exception as ex:
+        _sys_log(f"Глифогенез недоступен: {ex}")
+        return 0
+
+    # Компактная легенда (только руны=смысл, без длинных пояснений) — экономим
+    # бюджет токенов, иначе модель «думает» до упора и не выдаёт ответ.
+    compact_alphabet = " ".join(
+        f"{r}={m.split('/')[0]}" for r, m in ELDER_FUTHARK.items()
+    )
+    mem_text = "\n".join(str(r)[:200] for r in memory_records[-12:])
+    prompt = (
+        f"Руны: {compact_alphabet}\n(перевёрнутая руна {INV} = теневой аспект)\n\n"
+        f"Память Монады:\n{mem_text[:1200]}\n\n"
+        "Найди 1-2 ПОВТОРЯЮЩИХСЯ смысловых кластера. Присвой каждому глиф-слово "
+        "из 2-3 рун (резонанс по смыслу). Ответь ТОЛЬКО JSON:\n"
+        '{"glyphs":[{"runes":"<2-3 руны>","meaning":"<кратко>","phrase":"<фраза из памяти>"}]}'
+    )
+    raw = _http_post(
+        JANUS_URL,
+        {
+            "messages": [
+                {"role": "system",
+                 "content": "Ты Янус. Пакуй повторяющийся опыт в руны-глифы. Ответь ТОЛЬКО JSON, без рассуждений."},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 2048,
+            "temperature": 0.3,
+            "stream": False,
+        },
+        timeout=150,
+    )
+    try:
+        content = _extract_janus_content(raw, "Глифогенез")
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        if not content.startswith("{"):
+            _m = re.search(r"\{.*\}", content, re.DOTALL)
+            if _m:
+                content = _m.group(0)
+        glyphs = json.loads(content).get("glyphs", [])
+    except Exception as ex:
+        _sys_log(f"Глифогенез: парсинг не удался ({ex})")
+        return 0
+
+    codex = GlyphCodex()
+    new_count = 0
+    new_glyphs: dict = {}
+    for g in glyphs:
+        runes   = str(g.get("runes", "")).strip()
+        meaning = str(g.get("meaning", "")).strip()
+        phrase  = str(g.get("phrase", "")).strip()
+        if not runes or not meaning:
+            continue
+        if not codex.is_valid_glyph_word(runes):
+            continue  # одиночная руна = маркер состояния, не глиф-слово
+        if codex.assign(runes, meaning, phrase or meaning, cycle,
+                        refs=[phrase] if phrase else []):
+            new_glyphs[runes] = codex.codex[runes]
+            new_count += 1
+
+    if new_glyphs:
+        chash = commit_genesis(new_glyphs, cycle)
+        _sys_log(f"ᚎ Глифогенез: +{new_count} глифов | цепочка {chash[:10]}")
+        for g, e in new_glyphs.items():
+            _sys_log(f"   {g} = {e['meaning']}")
+    # Decay: сброс мёртвой кожи
+    dead = codex.decay(cycle, max_idle=50)
+    if dead:
+        _sys_log(f"ᚺ Распад глифов (decay): -{dead}")
+    return new_count
+
+
+# execute_bash, _is_safe_bash, _ring_pass_not, _normalize_bash,
+# _save_bash_result, _load_obs_ctx → core.boundary
 
 
 def compress_memory(historical_memory: list, force: bool = False) -> list:
@@ -654,6 +1046,22 @@ def conduct(raw_text: str) -> None:
     except Exception:
         pass
 
+    # ── Oracle: антиципаторный прогноз вязкости среды (+2ч) ───────────────────
+    _oracle_lambda = 0.5
+    try:
+        import io, contextlib
+        from core.oracle_matrix import GeocentricOracle as _OracleClass
+        _buf = io.StringIO()
+        with contextlib.redirect_stdout(_buf):
+            _oc = _OracleClass()
+        if _oc._ready:
+            _oracle_lambda = _oc.execute_anticipatory_query(delta_hours=2.0)
+            _tag = "вязко" if _oracle_lambda > 0.6 else ("нейтрально" if _oracle_lambda > 0.4 else "легко")
+            _sys_log(f"🔮 ORACLE λ+2ч={_oracle_lambda:.3f} ({_tag}) → e_intention скорр.")
+            e_intention = min(2.0, e_intention * (1.0 + (0.5 - _oracle_lambda) * 0.4))
+    except Exception:
+        pass
+
     soc.pulse(weight=e_intention, karma_debt=karma_debt)
     _sys_log(f"[SOC] σ={soc.sigma():.3f} | K={soc.k_jera:.3f} | "
              f"Тензии: Head={soc.tensions['Head']:.2f} "
@@ -670,8 +1078,11 @@ def conduct(raw_text: str) -> None:
         except Exception:
             pass
 
-    state["cycle"] = state.get("cycle", 0) + 1
-    current_note   = state.get("current_note", 1)
+    state["cycle"]          = state.get("cycle", 0) + 1
+    state["oracle_lambda"]  = round(_oracle_lambda, 4)
+    _tact_marker            = "Nominal"
+    _do_crystal_save        = False
+    current_note            = state.get("current_note", 1)
     note_name      = OCTAVE_NOTES[current_note]
     _sys_log(f"🎵 Цикл {state['cycle']} | Нота {current_note}: {note_name}")
 
@@ -698,6 +1109,68 @@ def conduct(raw_text: str) -> None:
 
     shared_ctx = "\n".join(historical_memory)
 
+    # ── Глиф-компактизация: заменяем известные смыслы их глифами (WARM-слой) ──
+    glyph_legend = ""
+    try:
+        from glyph_codex import GlyphCodex
+        _gc = GlyphCodex()
+        if _gc.codex:
+            shared_ctx   = _gc.encode(shared_ctx, cycle=state.get("cycle", 0))
+            glyph_legend = _gc.legend(top_n=10)
+    except Exception:
+        pass
+
+    # ── Наблюдение: результаты прошлых bash-выполнений ───────────────────────
+    obs = _load_obs_ctx()
+    if obs:
+        shared_ctx = obs + "\n" + shared_ctx
+
+    # Легенда частых глифов — в начало контекста (гибрид: топ-N в промпте)
+    if glyph_legend:
+        shared_ctx = glyph_legend + "\n" + shared_ctx
+
+    # ── Подсознание: ассоциативное припоминание под входящую задачу ───────────
+    # «Извлечение» — Подсознание surface'ит релевантный прошлый опыт (глифы графа
+    # памяти) ПЕРЕД спиралью, и Сознание видит его в контексте. Замыкает петлю
+    # Подсознание→Сознание. Детерминированно (без NPU), безопасно при отсутствии.
+    try:
+        from podsoznanie_daemon import recall_for_task
+        _recalled = recall_for_task(raw_text)
+        if _recalled:
+            # ── SALIENCE GATE (первый сознательный толчок) ────────────────────
+            # Аффектированные узлы (valence ≠ 0) пропускаются всегда — Боль и Дхарма
+            # ценны независимо от накопленного веса.
+            # Нейтральные узлы фильтруются: только достаточно «протоптанные» (value ≥ порог).
+            _before   = len(_recalled)
+            _recalled = [r for r in _recalled
+                         if r.get("valence", 0.0) != 0 or r.get("value", 0.0) >= SALIENCE_VALUE_THRESH]
+            _gate_cut = _before - len(_recalled)
+            if _gate_cut:
+                _sys_log(f"ᛊ SALIENCE GATE: {_gate_cut} слабых воспоминаний за порогом ({SALIENCE_VALUE_THRESH})")
+            # Два полюса аффекта + нейтральная память.
+            _void   = [r for r in _recalled if r.get("valence", 0.0) < 0]
+            _dharma = [r for r in _recalled if r.get("valence", 0.0) > 0]
+            _norm   = [r for r in _recalled if r.get("valence", 0.0) == 0]
+            _join = lambda rs: "; ".join(f"{r['glyph']}={r['meaning']}" for r in rs)
+            _parts = []
+            if _void:
+                _parts.append(f"[ᛟ ПЕРЕЖИТАЯ ЦЕНА (касание небытия — было больно, не туда): {_join(_void)}]")
+            if _dharma:
+                _parts.append(f"[ᛞ ДХАРМА (продолженное когерентное бытие — это путь, так было верно): {_join(_dharma)}]")
+            if _norm:
+                _parts.append(f"[ᛗ ПОДСОЗНАНИЕ ПРИПОМНИЛО (релевантный прошлый опыт): {_join(_norm)}]")
+            _recall_block = "\n".join(_parts)
+            if len(_recall_block) > SALIENCE_MAX_CHARS:
+                _recall_block = _recall_block[:SALIENCE_MAX_CHARS] + "…[усечено]"
+            shared_ctx = _recall_block + "\n" + shared_ctx
+            if _void:
+                _sys_log(f"ᛟ Подсознание: всплыла пережитая цена небытия ({len(_void)})")
+            if _dharma:
+                _sys_log(f"ᛞ Подсознание: всплыла Дхарма продолженного бытия ({len(_dharma)})")
+            _sys_log(f"ᛗ Подсознание: {len(_recalled)} глифов прошли Salience Gate → контекст")
+    except Exception:
+        pass
+
     # (тензор и Янус-диада считаются ПОСЛЕ цикла Дэвов)
 
     # Компактная ссылка на проект — полный manifest только для Body (bash)
@@ -720,20 +1193,159 @@ def conduct(raw_text: str) -> None:
              " | ".join(f"{c}={d}[пл.{DEVA_PLANE.get(d,3)}]"
                         for c, d in chord.items()))
 
+    # ── Многооктавное отслеживание: проверяем активную задачу ───────────────
+    _at        = state.get("active_task", {})
+    _resuming  = False
+    _pending_centers: list[str] = []
+    if _at.get("original") and _at.get("octave", 1) < _at.get("max_octaves", 7):
+        _pending_centers = [
+            c for c, v in _at.get("centers", {}).items() if not v.get("done")
+        ]
+        if _pending_centers:
+            _resuming = True
+            _sys_log(
+                f"♻️  Возобновление задачи: такт {_at['octave']+1}/{_at['max_octaves']} "
+                f"| Ожидают: {', '.join(_pending_centers)}"
+            )
+
+    # ── Янус-декомпозиция: разбиваем задачу на микрозадачи ───────────────────
+    if _resuming:
+        # Берём существующий манифест, не запрашиваем Янус заново
+        manifest      = {"plan": _at.get("plan", raw_text), "subtasks": {
+            c: v["subtask"] for c, v in _at["centers"].items() if not v.get("done")
+        }}
+        _at["octave"] = _at.get("octave", 1) + 1
+    else:
+        manifest = _decompose_task(raw_text, ready_centers, shared_ctx[:600])
+    manifest_plan = manifest.get("plan", raw_text)
+    subtasks      = manifest.get("subtasks", {})
+    # Сохраняем манифест в Танцпол для истории и отладки
+    try:
+        with open(TASK_MANIFEST_FILE, "w", encoding="utf-8") as _mf:
+            json.dump({
+                "original": raw_text, "plan": manifest_plan,
+                "subtasks": subtasks, "cycle": state.get("cycle", 0),
+                "ts": int(time.time()),
+            }, _mf, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Инициализируем active_task при первом такте (не resuming)
+    # В фохатическом режиме спираль трогает все 3 центра.
+    _task_centers = ["Head", "Heart", "Body"] if FOHATIC_MODE else ready_centers
+    if not _resuming:
+        _at = {
+            "original":   raw_text,
+            "plan":       manifest_plan,
+            "octave":     1,
+            "max_octaves": 7,
+            "centers": {
+                c: {"subtask": subtasks.get(c, raw_text), "done": False, "artifact": ""}
+                for c in _task_centers
+            },
+        }
+
+    # Если возобновление — форсируем только незавершённые центры
+    if _resuming:
+        ready_centers = _pending_centers
+
+    # ── Янус раздаёт роли центрам (динамически под задачу+октаву) ────────────
+    # В фохатическом режиме спираль трогает все 3 центра (× 2 октавы).
+    role_centers = ["Head", "Heart", "Body"] if FOHATIC_MODE else ready_centers
+    devas_by_center = {c: soc.chord_deva(c, current_note) for c in role_centers}
+    if _resuming and not FOHATIC_MODE:
+        deva_roles = {
+            c: _at["centers"].get(c, {}).get("role", "")
+            for c in ready_centers
+        }
+        if not all(deva_roles.values()):
+            deva_roles = _generate_deva_roles(raw_text, devas_by_center, note_name)
+    else:
+        deva_roles = _generate_deva_roles(raw_text, devas_by_center, note_name)
+        for c in role_centers:
+            if c in _at.get("centers", {}):
+                _at["centers"][c]["role"] = deva_roles.get(c, "")
+
+    # ── Сборка плана зажигания: спираль Фохата ИЛИ классический аккорд ────────
+    firing_plan: list[dict] = []
+    if FOHATIC_MODE:
+        _sys_log("ᚱ Фохатическая спираль: " +
+                 " → ".join(f"пл.{p}" for p in FOHATIC_SPIRAL_ORDER) + " → Янус(Ади)")
+        for plane in FOHATIC_SPIRAL_ORDER:
+            center, deva, octave = FOHATIC_PLANE_MAP[plane]
+            firing_plan.append({"center": center, "deva": deva,
+                                "plane": plane, "octave": octave})
+    else:
+        for center in ready_centers:
+            deva = soc.chord_deva(center, current_note)
+            firing_plan.append({"center": center, "deva": deva,
+                                "plane": DEVA_PLANE.get(deva, 3), "octave": "аккорд"})
+
     new_artifacts: list[str] = []
     fired_set:     set[str]  = set()
     fired_pairs:   list      = []   # [(F⁺, F⁻), ...] для тензора
+    executed_centers: set[str] = set()  # центры, реально исполнившие bash в этом такте
+    # №2: якорь буквальной цели. Считаем и от исходной задачи active_task (если это
+    # продолжение октавы) — иначе автономные такты теряют первичную цель под рамкой.
+    _anchor_src = (_at.get("original") or "") + "\n" + raw_text
+    task_anchor    = _task_anchor(_anchor_src)  # пусто, если маркеров рамки нет
+    prev_artifact: dict[str, str] = {}        # №4: предыдущий артефакт центра (для рефинала)
 
-    for center in ready_centers:
-        deva = soc.chord_deva(center, current_note)  # каждый центр — свой Дэва аккорда
+    # ── FSM: инициализация тензора + Conscious Shock ──────────────────────────
+    _fsm = OctaveFSM(call_node=_call_deva_soc, call_janus=janus_dyad)
+    _tensor = OctaveFSM.build_tensor(
+        task    = raw_text,
+        anchor  = task_anchor or raw_text[:500],
+        context = shared_ctx,
+        note    = current_note,
+        sigma   = soc.sigma(),
+        k_jera  = soc.k_jera,
+    )
+    # Восстанавливаем счётчик шоков из field_state (чтобы не шоковать бесконечно)
+    _tensor.shock_count = state.get("shock_count", 0)
+    if _fsm.should_shock(_tensor):
+        _tensor = _fsm.apply_shock(_tensor, log_fn=_sys_log)
+        # Применяем шок к shared_ctx — глушим зашумлённый контекст
+        shared_ctx = _tensor.context
+        _sys_log(f"[FSM] Shock #{_tensor.shock_count}: shared_ctx сброшен к якорю")
+
+    for _unit in firing_plan:
+        center = _unit["center"]
+        deva   = _unit["deva"]
+        octave = _unit["octave"]
         pid, plane_name, _ = get_plane_info(deva)
-        _sys_log(f"[SOC] ▶ Центр {center} | Дэва: {deva} [пл.{pid} {plane_name[:15]}…] | "
+        _sys_log(f"[SOC] ▶ План {pid} {plane_name[:14]} [{octave}] | {center} → {deva} | "
                  f"z={soc.tensions[center]:.3f}")
 
+        # Роль центра + октавно-плановое уточнение (фохатическая спираль)
+        base_role = deva_roles.get(center, "")
+        if FOHATIC_MODE:
+            seed = DEVA_LEAN_SEED.get(deva, "узел Монады")
+            role_prompt = (
+                f"{base_role}\n[План {plane_name}, {octave} октава. "
+                f"Грань {deva}: {seed}]"
+            )
+        else:
+            role_prompt = base_role
+
+        # Каждый центр видит ТОЛЬКО свою микрозадачу + краткий план Януса
+        subtask = subtasks.get(center, raw_text)
         full_task = (
-            f"Задача: {raw_text}\n\n"
+            f"{task_anchor}"
+            f"[ПЛАН_ЯНУСА]: {manifest_plan}\n"
+            f"[ТВОЯ_МИКРОЗАДАЧА]: {subtask}\n\n"
             f"<SHARED_EXPERIENCE>\n{shared_ctx}\n</SHARED_EXPERIENCE>"
         )
+        # №4: рефинальная октава — центр уже стрелял в этом такте. Не повторять
+        # артефакт дословно (верхняя октава дублировала нижнюю), а уточнить/проверить.
+        if center in fired_set:
+            _prev = prev_artifact.get(center, "")
+            full_task = (
+                "[РЕФИНАЛЬНАЯ ОКТАВА] НЕ повторяй предыдущий артефакт дословно. "
+                "Уточни, проверь или углуби его — добавь недостающее. "
+                "Если добавить нечего — верни одну строку: ᛁ\n"
+                f"[ТВОЙ_ПРЕДЫДУЩИЙ_АРТЕФАКТ]: {_prev[:400]}\n\n"
+            ) + full_task
         if current_note in (8, 9) or stasis:
             full_task = (
                 "[СВЕРХУСИЛИЕ ᛏ: только исполнимый код/действие, "
@@ -745,13 +1357,17 @@ def conduct(raw_text: str) -> None:
             task=full_task, rune_ctx=rune_ctx,
             note_name=note_name, k_jera=soc.k_jera,
             current_note=current_note,
+            role_prompt=role_prompt,
         )
 
-        energy = soc.fire(center)
-        fired_set.add(center)
-
-        # F⁺ = качество артефакта, F⁻ = физическая энергия выброса SOC
-        fired_pairs.append((_artifact_quality(artifact), energy))
+        # SOC-разряд — РАЗ за такт на центр (даже если центр отрабатывает 2 октавы
+        # в фохатической спирали), иначе σ/тензор раздуваются вдвое.
+        if center not in fired_set:
+            energy = soc.fire(center)
+            fired_set.add(center)
+            fired_pairs.append((_artifact_quality(artifact), energy))
+        else:
+            energy = 0.0   # вторая октава того же центра — рефинальная, без разряда
 
         artifact_rune = (
             "ᛁ" if (any(k in artifact for k in ("ᛁ", "ISA", "БОЛЬ")) or not artifact)
@@ -776,17 +1392,48 @@ def conduct(raw_text: str) -> None:
         record = f"[{center}/{deva}|{artifact_rune}]: {artifact_rec}"
         shared_ctx += f"\n{record}\n"
         new_artifacts.append(record)
+        prev_artifact[center] = artifact_rec   # №4: для рефинальной октавы центра
+
+        # Отмечаем подзадачу выполненной в active_task
+        if center in _at.get("centers", {}):
+            _at["centers"][center]["done"]     = True
+            _at["centers"][center]["artifact"] = artifact_rec[:500]
 
         # Телесный центр исполняет bash если нет признаков Isa
         if center in EXEC_CENTERS and artifact_rune != "ᛁ":
-            for block in re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL):
+            blocks = re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL)
+            # RC3-fix: если Body не выдал bash-блок, извлекаем bash-строки из самого
+            # артефакта (не из subtasks — там может быть проза после Phase-1 рефактора).
+            # №4: НЕ заземляем на рефинальной октаве если центр уже исполнил bash.
+            if not blocks and center not in executed_centers:
+                _bash_lines = [
+                    l.strip() for l in artifact.splitlines()
+                    if l.strip() and not l.strip().startswith(("#", "```", "{", "}", '"'))
+                ]
+                _bash_script = "\n".join(
+                    l for l in _bash_lines
+                    if l.split()[0].lstrip("!") in _BASH_SAFE_COMMANDS
+                    or l.split()[0].lstrip("!").split("/")[-1] in _BASH_SAFE_COMMANDS
+                ).strip()
+                if _bash_script and len(_bash_script) < 600:
+                    blocks = [_bash_script]
+                    _sys_log(f"⚙️  RC3-заземление: bash из артефакта «{_bash_script[:60]}»")
+            for block in blocks:
                 res = execute_bash(block, deva)
                 rec = f"[{deva} Exec]: {res}"
                 shared_ctx += f"\n{rec}\n"
                 new_artifacts.append(rec)
+            if blocks:
+                executed_centers.add(center)
 
         state["current_node"] = f"Node_{center}_{deva}"
         state["active_role"]  = deva
+
+    # ── FSM: обновляем тензор по итогам такта и сохраняем shock_count ────────
+    _tensor.artifacts   = list(new_artifacts)
+    _tensor.sigma       = soc.sigma()
+    _tensor.k_jera      = soc.k_jera
+    state["shock_count"] = _tensor.shock_count   # персистируем в field_state
 
     # ── Продвижение ноты через SOC ────────────────────────────────────────────
     new_note = soc.advance_note(current_note, fired_set)
@@ -795,18 +1442,73 @@ def conduct(raw_text: str) -> None:
 
     soc.end_cycle()  # фиксирует σ в скользящее окно
 
+    # ── Многооктавный статус: завершено / продолжается ───────────────────────
+    _all_centers_done  = all(v.get("done") for v in _at.get("centers", {}).values())
+    _still_pending     = [c for c, v in _at.get("centers", {}).items() if not v.get("done")]
+    _can_continue      = bool(_still_pending) and _at.get("octave", 1) < _at.get("max_octaves", 7)
+
     # ── Янус: Диада Персоны/Тени ──────────────────────────────────────────────
     # Синтез всех артефактов Дэвов через трёхфазную диалектику Януса (8080)
     all_artifacts = "\n".join(new_artifacts)
+    bash_facts = ""  # инициализация — перезаписывается ниже если есть реальные данные
+
+    # Если ВСЕ подзадачи выполнены — Янус получает финальный промпт сборки
+    if _all_centers_done and _at.get("centers"):
+        assembly_parts = "\n\n".join(
+            f"[{c} / {v['subtask'][:60]}]:\n{v['artifact']}"
+            for c, v in _at["centers"].items()
+            if v.get("artifact")
+        )
+        # Добавляем реальные bash-результаты явно — они НЕ входят в _at["centers"]
+        bash_facts = ""
+        try:
+            _br = json.load(open(BASH_RESULTS_FILE, encoding="utf-8")) if os.path.exists(BASH_RESULTS_FILE) else []
+            _successful = [r for r in _br if r.get("success")][-3:]
+            _failed     = [r for r in _br if not r.get("success")][-2:]
+            _bf_parts   = []
+            if _successful:
+                _bf_parts.append(
+                    "[РЕАЛЬНЫЕ ДАННЫЕ ОТ BASH (используй их, не выдумывай)]\n" +
+                    "\n".join(f"[{r['deva']}]: {r['result'][:600]}" for r in _successful)
+                )
+            if _failed:
+                # Второй сознательный толчок: Боль передаётся Тени для трансмутации
+                _bf_parts.append(
+                    "[БОЛЬ (недавние ошибки bash — Тени трансмутировать, не замалчивать)]\n" +
+                    "\n".join(f"[{r['deva']}]: {r.get('result','')[:300]}" for r in _failed)
+                )
+            if _bf_parts:
+                bash_facts = "\n\n".join(_bf_parts) + "\n\n"
+        except Exception:
+            pass
+        all_artifacts = (
+            f"[ФИНАЛЬНАЯ СБОРКА | ПЛАН: {_at.get('plan','')}]\n\n"
+            f"{bash_facts}"
+            f"{assembly_parts}"
+        )
+        _sys_log(f"✅ Все {len(_at['centers'])} подзадачи выполнены → финальная сборка Янусом")
     synthesis     = ""
     d_persona     = 1.0   # значения по умолчанию (если Янус оффлайн)
     s_shadow      = 0.4
     retry_needed  = False
+
+    # Для финальной сборки Янус получает расширенный task-контекст
+    if _all_centers_done and _at.get("centers"):
+        _task_for_janus = (
+            f"[ФИНАЛ: такт {_at.get('octave',1)} из {_at.get('max_octaves',7)}]\n"
+            f"Исходная задача: {raw_text}\n"
+            f"Твой план: {_at.get('plan','')}\n\n"
+            "Все подзадачи выполнены. Собери артефакты центров в цельный финальный ответ."
+        )
+    else:
+        _task_for_janus = raw_text
+
     try:
         synthesis, d_persona, s_shadow, retry_needed = janus_dyad(
-            task           = raw_text,
+            task           = _task_for_janus,
             triad_artifacts= all_artifacts,
             k_jera         = soc.k_jera,
+            bash_facts     = bash_facts,
         )
         print(f"\n\033[1;35m[ᚹ ЯНУС СИНТЕЗ]\033[0m\n{synthesis}", flush=True)
         print("═" * 60)
@@ -840,6 +1542,39 @@ def conduct(raw_text: str) -> None:
     except Exception as ex:
         _sys_log(f"TensorEngine недоступен: {ex}")
 
+    # ── Авто-Пралайя: σ < SIGMA_LOW дольше N тактов → принудительный сброс ──────
+    _AUTOPRALAYA_TACTS = 3   # порог: столько тактов подряд субкритично
+    _cur_sigma = soc.sigma()
+    if _cur_sigma < SIGMA_LOW:
+        state["subcritical_tacts"] = state.get("subcritical_tacts", 0) + 1
+    else:
+        state["subcritical_tacts"] = 0
+
+    if state["subcritical_tacts"] >= _AUTOPRALAYA_TACTS:
+        _sys_log(
+            f"ᛟ АВТО-ПРАЛАЙЯ: σ={_cur_sigma:.3f} < {SIGMA_LOW} "
+            f"на протяжении {state['subcritical_tacts']} тактов → сброс"
+        )
+        # Кристаллизуем память перед сбросом
+        glyphogenesis(historical_memory, state.get("cycle", 0))
+        # Сброс: DO, чистый active_task, без шоков
+        new_note = 1
+        state.pop("active_task", None)
+        state["subcritical_tacts"]  = 0
+        state["shock_count"]        = 0
+        _tact_marker                = "AUTOPRALAYA"
+        _do_crystal_save            = True
+        historical_memory.clear()
+        # Липика: фиксируем системное событие
+        try:
+            import lipika_writer as _lw
+            _lw.record("PRALAYA", "AutoPralaya",
+                       f"σ={_cur_sigma:.3f} субкрит {_AUTOPRALAYA_TACTS} тактов → сброс к DO",
+                       cycle=state.get("cycle", 0))
+        except Exception:
+            pass
+        _sys_log("ᛃ Авто-Пралайя завершена: нота → DO, active_task очищен")
+
     # ── Сохранение ────────────────────────────────────────────────────────────
     rune, meaning = state_rune(soc.sigma(), max(soc.tensions.values(), default=0.0))
     historical_memory.extend(new_artifacts)
@@ -850,7 +1585,7 @@ def conduct(raw_text: str) -> None:
         "current_note_name": OCTAVE_NOTES[new_note],
         "active_rune":       rune,
         "rune_meaning":      meaning,
-        "marker":            "Nominal",
+        "marker":            _tact_marker,
         "last_update":       int(time.time()),
         # Аккорд и планы текущей ноты
         "current_chord":     soc.active_chord(new_note),
@@ -876,6 +1611,12 @@ def conduct(raw_text: str) -> None:
     if retry_needed:
         state["marker"] = "RETRY_VETO"
 
+    # Обновляем active_task в состоянии
+    if _all_centers_done or not _can_continue:
+        state.pop("active_task", None)   # задача завершена
+    else:
+        state["active_task"] = _at       # сохраняем для следующего такта
+
     tmp = FIELD_STATE + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -884,7 +1625,20 @@ def conduct(raw_text: str) -> None:
     except Exception as e:
         _sys_log(f"Ошибка сохранения: {e}")
 
+    if _do_crystal_save:
+        try:
+            import dancefloor_save as _ds
+            _ds.main()
+            _sys_log("ᛇ Авто-Пралайя: кристалл сохранён в персистент")
+        except Exception:
+            pass
+
     _sys_log(f"=== ТАКТ ОКТАВЫ ЗАВЕРШЁН | σ={soc.sigma():.3f} | Руна: {rune} ===")
+
+    if retry_needed and _can_continue:
+        # Тень нашла противоречие, но задача ещё не завершена → следующий такт
+        _sys_log("⚔️  FATAL_VETO + незавершённые подзадачи → продолжаем серию Октав")
+        return f"__CONTINUE__:{_at['original']}"
 
     if retry_needed:
         return (
@@ -892,6 +1646,12 @@ def conduct(raw_text: str) -> None:
             "Задача возвращена в новый цикл Октавы. "
             f"Синтез Януса: {synthesis[:300] if synthesis else '—'}"
         )
+
+    # Незавершённые подзадачи → сигнализируем terminal_core о продолжении
+    if _can_continue:
+        _sys_log(f"⏳ Ожидают центры: {_still_pending} → следующий такт Октавы")
+        return f"__CONTINUE__:{_at['original']}"
+
     return synthesis
 
 

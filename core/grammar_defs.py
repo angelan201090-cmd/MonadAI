@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-BNF/GBNF-грамматики для llama.cpp (порт 8080, Янус).
+BNF/GBNF-грамматики для llama.cpp.
 Передаются в параметре "grammar" API-запроса для принудительного
 структурирования вывода модели на уровне декодинга (token-constrained sampling).
 
-NPU-модели Триады (8081/8082/8083 → lemond) могут не поддерживать grammar;
-для них используется prompt-engineering + JSON-парсинг с fallback.
+v35.0 ГЕПТАРХИЯ: все узлы — GPU llama-server, grammar поддерживается везде.
+DEVA_GBNF   → Триада  (Head=8081, Heart=8082, Body=8083)
+SHADOW_GBNF → Тень    (8085)
+PERSONA_GBNF → Персона (8084)
 """
 
 # ── Дэва: артефакт + руна + действие ─────────────────────────────────────────

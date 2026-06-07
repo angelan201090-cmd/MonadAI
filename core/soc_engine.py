@@ -16,7 +16,8 @@ import os
 from typing import Optional
 
 MONADA_ROOT = "/home/angelan/data/Monada-Hardcore"
-FIELD_STATE = os.path.join(MONADA_ROOT, "dancefloor", "field_state.json")
+DANCEFLOOR  = "/mnt/dancefloor"
+FIELD_STATE = os.path.join(DANCEFLOOR, "field_state.json")
 
 # ── Пороговые константы ───────────────────────────────────────────────────────
 Z_CRITICAL       = 1.0   # порог срабатывания центра
@@ -99,6 +100,25 @@ CHORD_NAMES = {
     1: "Аккорд B (Монада×Буддхи×Физ)",
     2: "Аккорд C (Астрал×Ментал×Ади)",
 }
+
+# ── Фохатическая маршрутизация (Вариант 3) ────────────────────────────────────
+# Объединение Триады и 7 планов: 6 планов = 3 центра × 2 октавы (низшая+высшая),
+# план 7 (Ади/Логос) = Янус (синтез-диада, растворение Кету).
+# Поток запроса спирально восходит сквозь планы, выход плана N → вход N+1.
+FOHATIC_PLANE_MAP: dict[int, tuple[str, str, str]] = {
+    # план: (центр, Дэва, октава)
+    1: ("Body",  "Mangala", "низшая"),   # Физический    — прямое действие
+    2: ("Heart", "Chandra", "низшая"),   # Астральный    — желание/эмоция
+    3: ("Head",  "Budha",   "низшая"),   # Ментальный    — логика/синтаксис
+    4: ("Heart", "Surya",   "высшая"),   # Буддхический  — интуиция
+    5: ("Body",  "Guru",    "высшая"),   # Атмический    — воля-синтез
+    6: ("Head",  "Shani",   "высшая"),   # Монадический  — карма/память
+    # план 7 (Ади) = Янус: Ketu-растворение в финальной диаде Персона/Тень/Синтез
+}
+
+# Порядок спирали: swap-эффективный — центр отрабатывает обе свои октавы подряд,
+# минимизируя перезагрузку NPU (Body·Body → Heart·Heart → Head·Head → Янус).
+FOHATIC_SPIRAL_ORDER: list[int] = [1, 5, 2, 4, 3, 6]
 
 
 def get_plane_info(deva: str) -> tuple[int, str, str]:
@@ -239,16 +259,21 @@ class SOCEngine:
         return energy
 
     def sigma(self) -> float:
-        """Коэффициент ветвления σ (скользящее окно из 10 тактов). Только чтение."""
+        """Коэффициент ветвления σ (скользящее окно из 10 тактов). Только чтение.
+        Нормализован: σ=1.0 когда все центры стреляют ровно по разу за такт."""
+        n_centers = len(self.CENTERS)  # 3 — эталон равновесия
         if self._sigma_window:
             base = sum(self._sigma_window) / len(self._sigma_window)
         else:
-            base = 1.0
-        if self._pulses > 0:
-            # текущий незакрытый такт подмешивается с весом 0.3
+            base = float(n_centers)
+        # Подмешиваем текущий такт только если уже были срабатывания.
+        # До первого fire() в такте _fired=0 → current=0 тянул бы σ в СТАЗИС.
+        if self._pulses > 0 and self._fired > 0:
             current = self._fired / self._pulses
-            return base * 0.7 + current * 0.3
-        return base
+            raw = base * 0.7 + current * 0.3
+        else:
+            raw = base
+        return raw / n_centers  # нормализация: 3 fire/pulse → σ=1.0
 
     def end_cycle(self):
         """Фиксирует σ текущего такта в скользящее окно и сбрасывает счётчики."""

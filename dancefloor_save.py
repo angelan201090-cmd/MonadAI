@@ -5,11 +5,13 @@
 """
 import json
 import os
+import shutil
 import time
 
-MONADA_ROOT = "/home/angelan/data/Monada-Hardcore"
-DANCEFLOOR  = os.path.join(MONADA_ROOT, "dancefloor")
-CRYSTAL     = os.path.join(MONADA_ROOT, "dancefloor_crystal.json")
+MONADA_ROOT      = "/home/angelan/data/Monada-Hardcore"
+DANCEFLOOR       = "/mnt/dancefloor"
+CRYSTAL          = os.path.join(MONADA_ROOT, "dancefloor_crystal.json")
+GLYPH_PERSISTENT = os.path.join(MONADA_ROOT, "glyph_codex_persistent.json")
 
 
 def main():
@@ -32,6 +34,11 @@ def main():
         cycle = state.get("cycle", "?")
         rune  = state.get("active_rune", "?")
         print(f"[ᛇ] Кристалл сохранён → dancefloor_crystal.json | Цикл: {cycle} | Руна: {rune}")
+
+        glyph_src = os.path.join(DANCEFLOOR, "glyph_codex.json")
+        if os.path.exists(glyph_src):
+            shutil.copy2(glyph_src, GLYPH_PERSISTENT)
+            print(f"[ᛇ] Кодекс глифов сохранён → glyph_codex_persistent.json")
 
     except Exception as e:
         print(f"[ᛁ] Ошибка кристаллизации: {e}")

@@ -14,7 +14,7 @@ import os
 import math
 from typing import Dict
 
-FIELD_STATE = "/home/angelan/data/Monada-Hardcore/dancefloor/field_state.json"
+FIELD_STATE = "/mnt/dancefloor/field_state.json"
 
 # ── Типичные скорости (°/день абсолют) для нормализации влияния ────────────────
 TYPICAL_SPEEDS: Dict[str, float] = {
@@ -36,8 +36,8 @@ NAVAGRAHA: Dict[str, dict] = {
     "Sun":     {"param": "min_p",              "base": 0.08,   "range": (0.01, 0.20),    "deva": "Surya"},
     "Moon":    {"param": "presence_penalty",   "base": 0.65,   "range": (0.0,  2.0),     "deva": "Chandra"},
     "Mercury": {"param": "top_k",              "base": 40.0,   "range": (10.0, 100.0),   "deva": "Budha"},
-    "Venus":   {"param": "style_weight",       "base": 1.20,   "range": (0.5,  2.0),     "deva": "Shukra"},
-    "Mars":    {"param": "num_threads",        "base": 4.0,    "range": (1.0,  16.0),    "deva": "Mangala"},
+    "Venus":   {"param": "top_p",              "base": 0.90,   "range": (0.50, 1.0),     "deva": "Shukra"},
+    "Mars":    {"param": "repeat_last_n",     "base": 64.0,   "range": (32.0, 512.0),   "deva": "Mangala"},
     "Jupiter": {"param": "max_tokens",         "base": 8192.0, "range": (1024.0, 32768.0), "deva": "Guru"},
     "Saturn":  {"param": "repetition_penalty", "base": 1.18,   "range": (1.0,  1.5),     "deva": "Shani"},
     "Rahu":    {"param": "temperature",        "base": 0.25,   "range": (0.05, 0.90),    "deva": "Rahu"},
@@ -140,7 +140,7 @@ class StellarViscosityCalculator:
             lo, hi  = cfg["range"]
             raw_val = cfg["base"] * influence
             value   = max(lo, min(hi, raw_val))
-            if cfg["param"] in ("top_k", "max_tokens", "num_threads"):
+            if cfg["param"] in ("top_k", "max_tokens", "repeat_last_n"):
                 value = int(round(value))
 
             navagraha[body] = {
@@ -230,6 +230,109 @@ class StellarViscosityCalculator:
             os.replace(tmp, FIELD_STATE)
         except Exception as e:
             print(f"[SVC] Ошибка сохранения: {e}")
+
+
+# ── Параметры, реально принимаемые llama-server (OpenAI-compat endpoint) ──────
+# ctx_compress — поведенческий (Ketu): управляет глубиной контекста в conduct(), не в payload.
+_VALID_API_PARAMS = {"temperature", "min_p", "presence_penalty",
+                     "top_k", "repetition_penalty", "max_tokens",
+                     "top_p", "repeat_last_n"}
+
+# Rahu управляет temperature: применяется как мультипликатор к base_temp.
+# Зажимаем в разумный диапазон, чтобы роль не потеряла характер.
+_TEMP_RAHU_RANGE = (0.03, 1.50)
+
+
+class StargazerConfig:
+    """
+    Синглтон-конфигуратор: перед каждым API-вызовом собирает generation_config
+    из текущих планетарных позиций и фильтрует до валидных llama-server параметров.
+
+    Кеш 120 минут — планеты медленные, пересчёт каждый такт бессмысленен.
+    """
+
+    _TTL = 7200  # секунд
+
+    def __init__(self):
+        self._svc    = StellarViscosityCalculator()
+        self._cache: dict | None = None
+        self._cache_ts: float    = 0.0
+
+    def _refresh(self) -> dict:
+        now = time.time()
+        if self._cache is None or (now - self._cache_ts) > self._TTL:
+            self._cache    = self._svc.get_navagraha_params()
+            self._cache_ts = now
+        return self._cache
+
+    def build(self, deva: str = "", base_temp: float | None = None) -> dict:
+        """
+        Собирает словарь generation_config для прямой вставки в API payload.
+
+        deva      — имя Дэвы (Surya/Chandra/…); если пусто — берутся все тела.
+        base_temp — базовая температура роли (0.05 для Тени, 0.20 для Синтеза…).
+                    Rahu масштабирует её: final = clamp(base_temp × rahu_inf, range).
+                    Если None — берётся значение Rahu напрямую.
+        """
+        navagraha = self._refresh()
+
+        cfg: dict = {}
+        for body, data in navagraha.items():
+            param = data["param"]
+            if param not in _VALID_API_PARAMS:
+                continue
+            if param == "temperature":
+                continue  # обрабатываем Rahu отдельно ниже
+            cfg[param] = data["value"]
+
+        # Temperature: Rahu-influence масштабирует base_temp роли
+        rahu_data = navagraha.get("Rahu", {})
+        rahu_inf  = rahu_data.get("influence", 1.0)
+        if base_temp is not None:
+            raw_t = base_temp * rahu_inf
+            lo, hi = _TEMP_RAHU_RANGE
+            cfg["temperature"] = round(max(lo, min(hi, raw_t)), 4)
+        else:
+            cfg["temperature"] = rahu_data.get("value", 0.25)
+
+        # top_k → int (llama-server требует целое)
+        if "top_k" in cfg:
+            cfg["top_k"] = int(cfg["top_k"])
+
+        if "max_tokens" in cfg:
+            cfg["max_tokens"] = int(cfg["max_tokens"])
+        if "repeat_last_n" in cfg:
+            cfg["repeat_last_n"] = int(cfg["repeat_last_n"])
+
+        return cfg
+
+    def snapshot(self) -> str:
+        """Компактная строка с текущими планетарными значениями для логов."""
+        navagraha = self._refresh()
+        parts = []
+        for body, d in navagraha.items():
+            if d["param"] in _VALID_API_PARAMS:
+                retro = "℞" if d["direction"] == "retrograde" else ""
+                parts.append(f"{body}{retro}:{d['value']}")
+        return " | ".join(parts)
+
+
+# Модульный синглтон — импортируется один раз, кеш живёт весь процесс
+_stargazer_config: "StargazerConfig | None | bool" = None  # False = failed, don't retry
+
+
+def get_stargazer() -> "StargazerConfig | None":
+    global _stargazer_config
+    if _stargazer_config is False:
+        return None  # уже падало — не спамим ошибками на каждый вызов
+    if _stargazer_config is None:
+        try:
+            _stargazer_config = StargazerConfig()
+        except Exception as e:
+            print(f"[StargazerConfig] Инициализация провалилась: {e}. Используй статичные параметры.")
+            _stargazer_config = False
+            return None
+    return _stargazer_config
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
