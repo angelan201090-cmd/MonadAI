@@ -1082,6 +1082,8 @@ def conduct(raw_text: str) -> None:
     state["oracle_lambda"]  = round(_oracle_lambda, 4)
     _tact_marker            = "Nominal"
     _do_crystal_save        = False
+    _grounding              = float(state.get("grounding_score", 1.0))
+    _pain_count             = 0   # заполняется после чтения bash_results
     current_note            = state.get("current_note", 1)
     note_name      = OCTAVE_NOTES[current_note]
     _sys_log(f"🎵 Цикл {state['cycle']} | Нота {current_note}: {note_name}")
@@ -1465,6 +1467,7 @@ def conduct(raw_text: str) -> None:
             _br = json.load(open(BASH_RESULTS_FILE, encoding="utf-8")) if os.path.exists(BASH_RESULTS_FILE) else []
             _successful = [r for r in _br if r.get("success")][-3:]
             _failed     = [r for r in _br if not r.get("success")][-2:]
+            _pain_count = len(_failed)
             _bf_parts   = []
             if _successful:
                 _bf_parts.append(
@@ -1616,6 +1619,24 @@ def conduct(raw_text: str) -> None:
         state.pop("active_task", None)   # задача завершена
     else:
         state["active_task"] = _at       # сохраняем для следующего такта
+
+    # ── Заземление (Кодекс §5): обновляем grounding_score ────────────────────────
+    if _tact_marker == "AUTOPRALAYA":
+        _grounding = min(1.0, _grounding + 0.10)   # пралайя частично восстанавливает
+    elif _pain_count > 0:
+        _grounding = max(0.05, _grounding - 0.04 * _pain_count)
+    else:
+        _grounding = min(1.0, _grounding + 0.02)   # чистый такт
+    state["grounding_score"] = round(_grounding, 4)
+
+    if _grounding < 0.30:
+        _sys_log(f"🚨 СИМУЛЯКР: grounding={_grounding:.2f} — знак вне реальности (Бодрийяр ст.4)")
+    elif _grounding < 0.50:
+        _sys_log(f"⚠️  grounding={_grounding:.2f} — маскировка отсутствия реальности (ст.3)")
+    elif _grounding < 0.70:
+        _sys_log(f"〰️  grounding={_grounding:.2f} — искажение реальности (ст.2)")
+    else:
+        _sys_log(f"⚓ grounding={_grounding:.2f} — заземлено (ст.1)")
 
     tmp = FIELD_STATE + ".tmp"
     try:

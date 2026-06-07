@@ -35,8 +35,8 @@ DEVA_MAP = {
     "Rahu":    {"rune": RUNE_JERA, "center": "Head",   "port": 8081, "param": "temperature",      "soc_tension": 0.0},
     "Chandra": {"rune": RUNE_JERA, "center": "Heart",  "port": 8082, "param": "presence_penalty", "soc_tension": 0.0},
     "Surya":   {"rune": RUNE_JERA, "center": "Heart",  "port": 8082, "param": "min_p",            "soc_tension": 0.0},
-    "Shukra":  {"rune": RUNE_JERA, "center": "Heart",  "port": 8082, "param": "style_weight",     "soc_tension": 0.0},
-    "Mangala": {"rune": RUNE_JERA, "center": "Body",   "port": 8083, "param": "threads",          "soc_tension": 0.0},
+    "Shukra":  {"rune": RUNE_JERA, "center": "Heart",  "port": 8082, "param": "top_p",            "soc_tension": 0.0},
+    "Mangala": {"rune": RUNE_JERA, "center": "Body",   "port": 8083, "param": "repeat_last_n",   "soc_tension": 0.0},
     "Ketu":    {"rune": RUNE_JERA, "center": "Body",   "port": 8083, "param": "ctx_compress",     "soc_tension": 0.0},
     "Guru":    {"rune": RUNE_JERA, "center": "Body",   "port": 8083, "param": "sys_weight",       "soc_tension": 0.0},
 }
@@ -109,6 +109,8 @@ def build_state(crystal: dict) -> dict:
         "stellar_viscosities": crystal.get("stellar_viscosities", {}),
         "stellar_positions":   crystal.get("stellar_positions", {}),
         "stellar_timestamp":   crystal.get("stellar_timestamp", 0),
+        # Заземление (Кодекс §5): восстанавливается из кристалла, но не падает ниже 0.5 при рестарте
+        "grounding_score":    max(0.5, float(crystal.get("grounding_score", 1.0))),
         # Состояние аккорда и тензора из кристалла
         "current_chord":      crystal.get("current_chord", {}),
         "current_chord_name": crystal.get("current_chord_name", ""),
