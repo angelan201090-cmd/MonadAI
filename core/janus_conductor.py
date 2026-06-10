@@ -1150,7 +1150,12 @@ def glyphogenesis(memory_records: list, cycle: int) -> int:
             _m = re.search(r"\{.*\}", content, re.DOTALL)
             if _m:
                 content = _m.group(0)
-        glyphs = json.loads(content).get("glyphs", [])
+        content = content.lstrip()
+        decoder = json.JSONDecoder()
+        obj, idx = decoder.raw_decode(content)
+        if content[idx:].strip():
+            _sys_log("ᚷ glyphogenesis ignored trailing JSON/prose")
+        glyphs = obj.get("glyphs", [])
     except Exception as ex:
         _sys_log(f"Глифогенез: парсинг не удался ({ex})")
         return 0
