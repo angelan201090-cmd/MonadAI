@@ -380,6 +380,19 @@ def _should_force_pralaya(shared_ctx: str) -> tuple[bool, str]:
     return bool(reasons), ", ".join(reasons)
 
 
+_ARCHETYPE_MAP = {
+    "bash overrides model claim":      "Reality over Interpretation",
+    "repair tact restored grounding":  "Recovery through Verification",
+    "stale memory was filtered":       "Signal over Noise",
+    "context compacted successfully":  "Compression over Accumulation",
+}
+
+
+def _archetype_from_lesson(lesson: str) -> str:
+    """Детерминированное сопоставление урока → архетип (без LLM/эмбеддингов)."""
+    return _ARCHETYPE_MAP.get(lesson, "Compression over Accumulation")
+
+
 def _warm_semantic_meta(old_ctx: str) -> dict:
     """Детерминированная семантика WARM-записи из текста выгружаемого контекста.
 
@@ -418,6 +431,7 @@ def _warm_semantic_meta(old_ctx: str) -> dict:
         "recovery_score":        recovery_score,
         "candidate_for_crystal": candidate_for_crystal,
         "lesson":                lesson,
+        "archetype":             _archetype_from_lesson(lesson),
     }
 
 
@@ -457,6 +471,7 @@ def _compact_shared_ctx_for_tact(
         "recovery_score":        semantic["recovery_score"],
         "candidate_for_crystal": semantic["candidate_for_crystal"],
         "lesson":                semantic["lesson"],
+        "archetype":             semantic["archetype"],
     }, ensure_ascii=False)
     return shared_ctx[-keep_chars:], warm_record
 
