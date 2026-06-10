@@ -1258,6 +1258,31 @@ def _filter_stale_hot_memory(shared_ctx: str, bash_facts: str) -> str:
     return "\n".join(kept_lines)
 
 
+def _dedupe_hot_lines(text: str, max_repeats: int = 2) -> str:
+    """Limit repeated HOT-context lines while preserving their original order."""
+    repeat_limit = max(1, max_repeats)
+    seen: dict[str, int] = {}
+    kept_lines: list[str] = []
+    empty_run = 0
+
+    for line in text.splitlines():
+        normalized = line.strip()
+        if not normalized:
+            empty_run += 1
+            if empty_run <= repeat_limit:
+                kept_lines.append(line)
+            continue
+
+        empty_run = 0
+        count = seen.get(normalized, 0)
+        if count >= repeat_limit:
+            continue
+        seen[normalized] = count + 1
+        kept_lines.append(line)
+
+    return "\n".join(kept_lines)
+
+
 def _format_bash_fact(deva: str, result: str) -> str:
     if result.startswith("--- УСПЕХ"):
         return f"[{deva}]: {result}"
@@ -1626,6 +1651,12 @@ def conduct(raw_text: str) -> None:
             except Exception as _compact_err:
                 _sys_log(f"🌊 WARM write failed: {_compact_err}")
 
+    _hot_lines_before = len(shared_ctx.splitlines())
+    shared_ctx = _dedupe_hot_lines(shared_ctx)
+    _hot_lines_removed = _hot_lines_before - len(shared_ctx.splitlines())
+    if _hot_lines_removed:
+        _sys_log(f"ᚠ HOT dedupe removed {_hot_lines_removed} repeated lines")
+
     # ── Янус-декомпозиция: разбиваем задачу на микрозадачи ───────────────────
     if _resuming:
         # Берём существующий манифест, не запрашиваем Янус заново
@@ -1789,6 +1820,11 @@ def conduct(raw_text: str) -> None:
             )
         if node_shared_ctx != shared_ctx:
             _sys_log("ᚲ stale HOT memory filtered before Deva")
+        _node_lines_before = len(node_shared_ctx.splitlines())
+        node_shared_ctx = _dedupe_hot_lines(node_shared_ctx)
+        _node_lines_removed = _node_lines_before - len(node_shared_ctx.splitlines())
+        if _node_lines_removed:
+            _sys_log(f"ᚠ HOT dedupe removed {_node_lines_removed} repeated lines")
         _ctx_for_deva = (
             ((_mapped_obs + "\n") if _mapped_obs else "")
             + node_shared_ctx
@@ -2015,6 +2051,17 @@ def conduct(raw_text: str) -> None:
             _sys_log("ᚲ stale HOT memory filtered by BASH_FACTS")
         shared_ctx = _filtered_shared_ctx
         all_artifacts = _filtered_artifacts
+
+    _janus_lines_before = (
+        len(shared_ctx.splitlines()) + len(all_artifacts.splitlines())
+    )
+    shared_ctx = _dedupe_hot_lines(shared_ctx)
+    all_artifacts = _dedupe_hot_lines(all_artifacts)
+    _janus_lines_removed = _janus_lines_before - (
+        len(shared_ctx.splitlines()) + len(all_artifacts.splitlines())
+    )
+    if _janus_lines_removed:
+        _sys_log(f"ᚠ HOT dedupe removed {_janus_lines_removed} repeated lines")
 
     synthesis     = ""
     d_persona     = 1.0   # значения по умолчанию (если Янус оффлайн)
