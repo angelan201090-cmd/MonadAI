@@ -70,6 +70,49 @@ class TestTactBudget(unittest.TestCase):
         self.assertIn("free -h", frame["micro_tasks"]["Body"])
         self.assertIn("ss -tlnp", frame["micro_tasks"]["Body"])
 
+    def test_pre_janus_enabled_is_deterministic(self):
+        import core.janus_conductor as jc
+
+        self.assertTrue(jc.PRE_JANUS_ENABLED)
+        with patch.object(jc, "_http_post") as http_post:
+            frame = jc._pre_janus_frame("кто ты?")
+            manifest = jc._decompose_from_micro_tasks(
+                frame["micro_tasks"],
+                ["Head", "Heart", "Body"],
+                "кто ты?",
+                "",
+            )
+        http_post.assert_not_called()
+        self.assertEqual(
+            manifest["subtasks"]["Body"],
+            "не проверяй порты/RAM; ответь о роли Тела в Монаде",
+        )
+
+    def test_pre_janus_identity_blocks_body_bash(self):
+        from core.janus_conductor import _pre_janus_allows_bash, _pre_janus_frame
+
+        self.assertFalse(_pre_janus_allows_bash(_pre_janus_frame("кто ты?")))
+
+    def test_pre_janus_identity_strips_system_status_claims(self):
+        from core.janus_conductor import _strip_system_status_claims
+
+        result = _strip_system_status_claims(
+            "Я — Монада.\n\nRAM 87%, порт 8083 активен.\n\n```bash\nfree -h\n```",
+            "системная диагностика не запрашивалась",
+        )
+        self.assertIn("Я — Монада.", result)
+        self.assertIn("системная диагностика не запрашивалась", result)
+        self.assertNotIn("87%", result)
+        self.assertNotIn("8083", result)
+        self.assertNotIn("free -h", result)
+
+    def test_pre_janus_diagnostic_allows_body_bash(self):
+        from core.janus_conductor import _pre_janus_allows_bash, _pre_janus_frame
+
+        self.assertTrue(
+            _pre_janus_allows_bash(_pre_janus_frame("проверь порты и память"))
+        )
+
     def test_dyad_persona_shadow_share_endpoint(self):
         """ПЕРСОНА и ТЕНЬ делят один llama-server (8084, shared Gemma); Синтез отдельно (8086).
 
@@ -116,7 +159,7 @@ class TestTactBudget(unittest.TestCase):
         """Интеграционный: conduct() с мок-HTTP делает ≤ 9 LLM-запросов."""
         import core.janus_conductor as jc
 
-        self.assertFalse(jc.PRE_JANUS_ENABLED)
+        self.assertTrue(jc.PRE_JANUS_ENABLED)
         stub_ok = json.dumps({
             "choices": [{"message": {"content": "ᛁ тест"}}]
         })

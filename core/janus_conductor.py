@@ -31,7 +31,7 @@ from core.soc_engine import (
 # True — запрос восходит по 6 планам (Body·Heart·Head × 2 октавы) → Янус (Ади).
 # False — классический аккорд (3 Дэва по ноте). Спираль точнее, но 6 NPU-вызовов/такт.
 FOHATIC_MODE = True
-PRE_JANUS_ENABLED = False
+PRE_JANUS_ENABLED = True
 
 MONADA_ROOT        = "/home/angelan/data/Monada-Hardcore"
 DANCEFLOOR         = "/mnt/dancefloor"
@@ -954,27 +954,50 @@ def _collapse_repeated_paragraphs(
     return collapsed_text, collapsed_text != text
 
 
-def _block_unverified_system_claims(text: str, bash_facts: str) -> str:
-    if bash_facts:
-        return text
-    fallback = "нет BASH_FACTS для проверки системного состояния"
-    markers = re.compile(
-        r"\b(?:ram|ports?|listen|mem:)\b|памят|порт|808[1-6]",
-        re.IGNORECASE,
-    )
+_SYSTEM_STATUS_MARKERS = re.compile(
+    r"\b(?:ram|ports?|listen|mem:|services?)\b|памят|порт|сервис|808[1-6]"
+    r"|free\s+-h|ss\s+-tlnp",
+    re.IGNORECASE,
+)
+
+
+def _strip_system_status_claims(text: str, replacement: str = "") -> str:
     kept = []
     replaced = False
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
-        if markers.search(paragraph):
-            if not replaced:
-                kept.append(fallback)
+        if _SYSTEM_STATUS_MARKERS.search(paragraph):
+            if replacement and not replaced:
+                kept.append(replacement)
                 replaced = True
             continue
         kept.append(paragraph)
     return "\n\n".join(kept)
+
+
+def _block_unverified_system_claims(text: str, bash_facts: str) -> str:
+    if bash_facts:
+        return text
+    return _strip_system_status_claims(
+        text,
+        "нет BASH_FACTS для проверки системного состояния",
+    )
+
+
+def _pre_janus_allows_bash(frame: dict) -> bool:
+    return bool(frame.get("diagnostic_authorized")) if isinstance(frame, dict) else True
+
+
+def _bash_facts_verify_system_status(bash_facts: str) -> bool:
+    return bool(
+        bash_facts
+        and any(
+            marker in bash_facts
+            for marker in ("LISTEN", "llama-server", "Mem:", "RAM:", "Gi")
+        )
+    )
 
 
 def janus_dyad(
@@ -1925,6 +1948,15 @@ def conduct(raw_text: str) -> None:
         _sys_log("🌊 WARM recall injected")
 
     # ── Янус-декомпозиция: разбиваем задачу на микрозадачи ───────────────────
+    _pre_janus = (
+        _pre_janus_frame(_at.get("original") or raw_text)
+        if PRE_JANUS_ENABLED
+        else {
+            "intent": "disabled",
+            "diagnostic_authorized": True,
+            "micro_tasks": {},
+        }
+    )
     if _resuming:
         # Берём существующий манифест, не запрашиваем Янус заново
         manifest      = {"plan": _at.get("plan", raw_text), "subtasks": {
@@ -1932,7 +1964,11 @@ def conduct(raw_text: str) -> None:
         }}
         _at["octave"] = _at.get("octave", 1) + 1
     elif PRE_JANUS_ENABLED:
-        _pre_janus = _pre_janus_frame(raw_text)
+        _sys_log(
+            "[PRE_JANUS] enabled "
+            f"intent={_pre_janus.get('intent', 'default')} "
+            f"diagnostic_authorized={_pre_janus.get('diagnostic_authorized', False)}"
+        )
         manifest = _decompose_from_micro_tasks(
             _pre_janus.get("micro_tasks"),
             ready_centers,
@@ -2079,6 +2115,9 @@ def conduct(raw_text: str) -> None:
         _subtask = subtasks.get(_c, raw_text)
         _mapped_obs = map_obs_for_center(_c, _raw_obs)
         node_shared_ctx = shared_ctx
+        if not _pre_janus_allows_bash(_pre_janus):
+            node_shared_ctx = _strip_system_status_claims(node_shared_ctx)
+            _mapped_obs = _strip_system_status_claims(_mapped_obs)
         _current_bash_facts = "\n".join(_bash_fact_parts)
         if _current_bash_facts:
             node_shared_ctx = _filter_stale_hot_memory(
@@ -2184,7 +2223,14 @@ def conduct(raw_text: str) -> None:
             _at["centers"][center]["done"]     = True
             _at["centers"][center]["artifact"] = artifact_rec[:500]
 
-        if center in EXEC_CENTERS and artifact_rune != "ᛁ":
+        if (
+            center in EXEC_CENTERS
+            and artifact_rune != "ᛁ"
+            and not _pre_janus_allows_bash(_pre_janus)
+        ):
+            if "```bash" in artifact or _is_safe_body_raw_bash(artifact):
+                _sys_log("ᛉ PRE-JANUS blocked diagnostic bash")
+        elif center in EXEC_CENTERS and artifact_rune != "ᛁ":
             blocks = re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL)
             if not blocks and center not in executed_centers:
                 _bash_lines = [
@@ -2330,6 +2376,13 @@ def conduct(raw_text: str) -> None:
         shared_ctx = _filtered_shared_ctx
         all_artifacts = _filtered_artifacts
 
+    if (
+        not _pre_janus_allows_bash(_pre_janus)
+        and not _bash_facts_verify_system_status(bash_facts)
+    ):
+        shared_ctx = _strip_system_status_claims(shared_ctx)
+        all_artifacts = _strip_system_status_claims(all_artifacts)
+
     _janus_lines_before = (
         len(shared_ctx.splitlines()) + len(all_artifacts.splitlines())
     )
@@ -2364,6 +2417,11 @@ def conduct(raw_text: str) -> None:
             k_jera         = soc.k_jera,
             bash_facts     = bash_facts,
         )
+        if not _pre_janus_allows_bash(_pre_janus):
+            synthesis = _strip_system_status_claims(
+                synthesis,
+                "системная диагностика не запрашивалась",
+            )
         print(f"\n\033[1;35m[ᚹ ЯНУС СИНТЕЗ]\033[0m\n{synthesis}", flush=True)
         print("═" * 60)
     except Exception as ex:
