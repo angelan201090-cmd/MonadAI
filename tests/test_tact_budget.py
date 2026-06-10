@@ -32,9 +32,16 @@ class TestTactBudget(unittest.TestCase):
                          f"Ожидали 6 плоскостей, получили {len(FOHATIC_SPIRAL_ORDER)}")
 
     def test_fohatic_spiral_values(self):
-        """Порядок спирали должен быть [1,5,2,4,3,6] — Body×2→Heart×2→Head×2."""
+        """FOHATIC_SPIRAL_ORDER — ID слотов карты; FOHAT_CHAIN — порядок исполнения."""
         from core.soc_engine import FOHATIC_SPIRAL_ORDER
-        self.assertEqual(list(FOHATIC_SPIRAL_ORDER), [1, 5, 2, 4, 3, 6])
+        from core.janus_conductor import FOHAT_CHAIN
+
+        # Это разные понятия: слоты plane-map идут 1..6, а цепь хранит Дэвов.
+        self.assertEqual(list(FOHATIC_SPIRAL_ORDER), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(
+            [deva for _, deva, _ in FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
 
     def test_dyad_uses_3_distinct_ports(self):
         """Диада использует 3 разных порта: 8084, 8085, 8086."""

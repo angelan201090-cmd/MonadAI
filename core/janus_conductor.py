@@ -1717,56 +1717,16 @@ def conduct(raw_text: str) -> None:
         shared_ctx = _tensor.context
         _sys_log(f"[FSM] Shock #{_tensor.shock_count}: shared_ctx сброшен к якорю")
 
-    # ── Pre-Phase: интро-гипотеза УМа (стратегическая рамка для всех Дэвов) ──────
-    # Shani на порту 8081 (Head/УМ) формирует 1-2 предложения стратегии ДО спирали.
-    # Результат prepend'ится в shared_ctx — все 6 Дэвов видят рамку как первый абзац.
-    intro_hypothesis = ""
-    try:
-        _head_dna = _load_dna("Head")
-        _sigma_val  = round(soc.sigma(), 3)
-        _karma_val  = round(karma_debt, 2)
-        _t = soc.tensions
-        _stasis_str  = "СТАЗИС" if stasis else "норма"
-        _oracle_str  = f"λ={_oracle_lambda:.3f} ({'вязко' if _oracle_lambda > 0.6 else 'легко' if _oracle_lambda < 0.4 else 'нейтрально'})"
-        _pre_system = (
-            f"{_head_dna}"
-            "Ты — Шани (Сатурн), мета-наблюдатель. ПЕРЕД запуском рабочего цикла "
-            "сформируй одну стратегическую гипотезу: как системе следует действовать "
-            "в текущем состоянии поля. Учти σ, кармический долг, тензии центров и "
-            "вязкость будущего. Максимум 2 предложения. Только русский. Без JSON."
-        )
-        _pre_user = (
-            f"Задача: {raw_text[:300]}\n\n"
-            f"Состояние поля:\n"
-            f"  σ={_sigma_val} | K(Jera)={_karma_val} | {_stasis_str}\n"
-            f"  Тензии: Голова={_t['Head']:.2f} Сердце={_t['Heart']:.2f} Тело={_t['Body']:.2f}\n"
-            f"  Нота: {note_name} | Oracle: {_oracle_str}\n"
-            f"  Цикл: {state.get('cycle', 0)} | grounding={state.get('grounding_score', 1.0):.2f}\n\n"
-            "Сформируй intro_hypothesis: стратегию действий для текущего такта."
-        )
-        _pre_raw = _http_post(UM_URL, {
-            "messages": [
-                {"role": "system", "content": _pre_system},
-                {"role": "user",   "content": _pre_user},
-            ],
-            "temperature": 0.10,
-            "max_tokens":  300,
-            "stream":      False,
-        }, timeout=30)
-        _pre_data = json.loads(_pre_raw)
-        if "error" not in _pre_data:
-            intro_hypothesis = (_pre_data["choices"][0]["message"].get("content") or "").strip()
-            # Убираем возможные markdown-обёртки
-            intro_hypothesis = re.sub(r"^```[a-z]*\s*|\s*```$", "", intro_hypothesis, flags=re.MULTILINE).strip()
-        if intro_hypothesis:
-            shared_ctx = f"[ᚨ INTRO_HYPOTHESIS | Шани-наблюдатель]\n{intro_hypothesis}\n\n" + shared_ctx
-            state["intro_hypothesis"] = intro_hypothesis
-            _sys_log(f"ᚨ Pre-Phase: гипотеза готова ({len(intro_hypothesis)} символов)")
-            print(f"\n\033[2m[ᚨ INTRO_HYPOTHESIS]\033[0m\n{intro_hypothesis}\n", flush=True)
-        else:
-            _sys_log("ᚨ Pre-Phase: УМ не ответил, продолжаем без гипотезы")
-    except Exception as _pre_err:
-        _sys_log(f"ᚨ Pre-Phase: ошибка ({_pre_err}), продолжаем без гипотезы")
+    # ── Pre-Phase: детерминированная рамка без дополнительного LLM-вызова ──────
+    intro_hypothesis = f"Задача принята: {raw_text[:300]}"
+    shared_ctx = (
+        f"[ᚨ INTRO_HYPOTHESIS | Шани-наблюдатель]\n"
+        f"{intro_hypothesis}\n\n"
+        f"{shared_ctx}"
+    )
+    state["intro_hypothesis"] = intro_hypothesis
+    _sys_log(f"ᚨ Pre-Phase: гипотеза готова ({len(intro_hypothesis)} символов)")
+    print(f"\n\033[2m[ᚨ INTRO_HYPOTHESIS]\033[0m\n{intro_hypothesis}\n", flush=True)
 
     # ── Последовательная спираль Фохата по цепочке эннеаграммы (1-4-2-8-5-7) ────
     # Каждый Дэва выполняется строго после предыдущего; его артефакт немедленно
