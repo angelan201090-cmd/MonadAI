@@ -10,7 +10,7 @@ import datetime
 import subprocess
 import urllib.request
 import urllib.error
-from collections import Counter
+from collections import Counter, deque
 from stellar_viscosity_calculator import get_stargazer
 from core.octave_fsm import OctaveFSM, CognitiveTensor
 from core.boundary import (
@@ -403,6 +403,55 @@ def _compact_shared_ctx_for_tact(
         "excerpt_tail": old_ctx[-800:],
     }, ensure_ascii=False)
     return shared_ctx[-keep_chars:], warm_record
+
+
+def _recall_warm_memory(max_records: int = 3, max_chars: int = 1800) -> str:
+    """Читает последние WARM-записи (midterm_memory.jsonl) обратно в HOT-контекст.
+
+    Замыкает петлю HOT→WARM: pralaya-выгрузки больше не write-only.
+    Файл НЕ мутируется. Битые строки игнорируются. Возвращает "" если пусто.
+    """
+    if not os.path.exists(MIDTERM_MEMORY_FILE):
+        return ""
+    # Не грузим файл целиком — держим хвост из max_records*5 последних строк.
+    try:
+        with open(MIDTERM_MEMORY_FILE, "r", encoding="utf-8") as f:
+            tail_lines = deque(f, maxlen=max(max_records * 5, max_records))
+    except OSError:
+        return ""
+
+    records: list = []
+    for line in tail_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(rec, dict):          # принимаем только dict-записи
+            records.append(rec)
+    if not records:
+        return ""
+
+    parts = ["[🌊 WARM-ЭХО]"]
+    for rec in records[-max_records:]:
+        _type = rec.get("type", "?")
+        _reason = rec.get("reason", "")
+        _sha = str(rec.get("sha256", ""))[:10]
+        _chars = rec.get("chars_original", 0)
+        _head = str(rec.get("excerpt_head", "")).replace("\n", " ")[:300]
+        _tail = str(rec.get("excerpt_tail", "")).replace("\n", " ")[:300]
+        parts.append(f"- type={_type} reason={_reason} sha={_sha} chars={_chars}")
+        if _head:
+            parts.append(f"  head: {_head}")
+        if _tail:
+            parts.append(f"  tail: {_tail}")
+    block = "\n".join(parts)
+    if len(block) > max_chars:
+        _suffix = "…[усечено]"
+        block = block[: max(0, max_chars - len(_suffix))] + _suffix
+    return block
 
 
 def _http_post(url: str, payload: dict, timeout: int = 30) -> str:
@@ -1691,6 +1740,12 @@ def conduct(raw_text: str) -> None:
     _hot_lines_removed = _hot_lines_before - len(shared_ctx.splitlines())
     if _hot_lines_removed:
         _sys_log(f"ᚠ HOT dedupe removed {_hot_lines_removed} repeated lines")
+
+    # ── WARM-эхо: читаем последние pralaya-выгрузки обратно в HOT (HOT←WARM) ──
+    warm_echo = _recall_warm_memory()
+    if warm_echo:
+        shared_ctx += "\n" + warm_echo
+        _sys_log("🌊 WARM recall injected")
 
     # ── Янус-декомпозиция: разбиваем задачу на микрозадачи ───────────────────
     if _resuming:
