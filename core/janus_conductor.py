@@ -977,8 +977,14 @@ def _strip_system_status_claims(text: str, replacement: str = "") -> str:
     return "\n\n".join(kept)
 
 
-def _block_unverified_system_claims(text: str, bash_facts: str) -> str:
-    if bash_facts:
+def _block_unverified_system_claims(
+    text: str,
+    bash_facts: str,
+    pre_janus: dict | None = None,
+) -> str:
+    if bash_facts or not isinstance(pre_janus, dict):
+        return text
+    if pre_janus.get("intent") != "diagnostic":
         return text
     return _strip_system_status_claims(
         text,
@@ -987,7 +993,52 @@ def _block_unverified_system_claims(text: str, bash_facts: str) -> str:
 
 
 def _pre_janus_allows_bash(frame: dict) -> bool:
-    return bool(frame.get("diagnostic_authorized")) if isinstance(frame, dict) else True
+    if not isinstance(frame, dict):
+        return True
+    return bool(frame.get("bash_authorized", frame.get("diagnostic_authorized")))
+
+
+def _pre_janus_allows_action(frame: dict) -> bool:
+    if not isinstance(frame, dict):
+        return True
+    return bool(frame.get("action_authorized", frame.get("diagnostic_authorized")))
+
+
+_OUTWARD_ACTION_MARKERS = re.compile(
+    r"запустить|скрипт|\.sh\b|\bbash\b|порт|\bram\b|\bfree\b|\bss\b"
+    r"|/home/|/mnt/",
+    re.IGNORECASE,
+)
+
+
+def _strip_outward_action_proposals(text: str, replacement: str = "") -> str:
+    kept = []
+    replaced = False
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if _OUTWARD_ACTION_MARKERS.search(paragraph):
+            if replacement and not replaced:
+                kept.append(replacement)
+                replaced = True
+            continue
+        kept.append(paragraph)
+    return "\n\n".join(kept)
+
+
+def _finalize_synthesis_for_mode(
+    synthesis: str,
+    persona_text: str,
+    bash_facts: str,
+    pre_janus: dict,
+) -> str:
+    if pre_janus.get("mode") == "introspection":
+        filtered = _strip_outward_action_proposals(synthesis)
+        if filtered:
+            return filtered
+        return _strip_outward_action_proposals(persona_text)
+    return _block_unverified_system_claims(synthesis, bash_facts, pre_janus)
 
 
 def _bash_facts_verify_system_status(bash_facts: str) -> bool:
@@ -1123,7 +1174,12 @@ def janus_dyad(
     }, timeout=180)
     synthesis = _extract_janus_content(synth_raw, "Синтез")
     synthesis = _protect_literals(synthesis, f"{task}\n{persona_text}")
-    synthesis = _block_unverified_system_claims(synthesis, bash_facts)
+    synthesis = _finalize_synthesis_for_mode(
+        synthesis,
+        persona_text,
+        bash_facts,
+        _pre_janus_frame(task),
+    )
     synthesis, repeats_collapsed = _collapse_repeated_paragraphs(synthesis)
     if repeats_collapsed:
         _sys_log("ᛁ synthesis repeat collapsed")
@@ -1305,14 +1361,36 @@ def _pre_janus_frame(raw_text: str) -> dict:
     )
 
     if any(marker in lowered for marker in identity_markers):
+        identity_anchor = (
+            "MonadaAI is the local multi-node AI system running this "
+            "Monada-Hardcore architecture; do not answer as generic "
+            "philosophical/esoteric Monad."
+        )
         return {
             "intent": "identity",
+            "mode": "introspection",
             "diagnostic_authorized": False,
+            "action_authorized": False,
+            "bash_authorized": False,
             "archetype": "Identity",
+            "identity_anchor": identity_anchor,
             "micro_tasks": {
-                "Head": "Объясни идентичность и назначение Монады.",
-                "Heart": "Опиши характер и ценности Монады без системной диагностики.",
-                "Body": "не проверяй порты/RAM; ответь о роли Тела в Монаде",
+                "Head": (
+                    f"{identity_anchor} MonadaAI is the local AI system implemented "
+                    "by Monada-Hardcore, not a generic/esoteric monad. Describe "
+                    "MonadaAI architecture from its internal role and state, not "
+                    "through external diagnostics."
+                ),
+                "Heart": (
+                    f"{identity_anchor} Describe the value and meaning of MonadaAI "
+                    "as a local AI system in Monada-Hardcore, not a generic/esoteric monad."
+                ),
+                "Body": (
+                    f"{identity_anchor} MonadaAI is the local AI system in "
+                    "Monada-Hardcore, not a generic/esoteric monad. action='none'; "
+                    "describe the Body role internally inside MonadaAI only. Do not "
+                    "propose scripts, paths, bash, ports, RAM, or files."
+                ),
             },
         }
 
@@ -1320,6 +1398,8 @@ def _pre_janus_frame(raw_text: str) -> dict:
         return {
             "intent": "diagnostic",
             "diagnostic_authorized": True,
+            "action_authorized": True,
+            "bash_authorized": True,
             "archetype": "Diagnostics",
             "micro_tasks": {
                 "Head": f"Определи минимальный план системной диагностики: {raw_text}",
@@ -1334,6 +1414,8 @@ def _pre_janus_frame(raw_text: str) -> dict:
     return {
         "intent": "default",
         "diagnostic_authorized": False,
+        "action_authorized": False,
+        "bash_authorized": False,
         "archetype": "General",
         "micro_tasks": {
             "Head": f"Анализ и план решения: {raw_text}",
@@ -1954,6 +2036,8 @@ def conduct(raw_text: str) -> None:
         else {
             "intent": "disabled",
             "diagnostic_authorized": True,
+            "action_authorized": True,
+            "bash_authorized": True,
             "micro_tasks": {},
         }
     )
@@ -2226,6 +2310,17 @@ def conduct(raw_text: str) -> None:
         if (
             center in EXEC_CENTERS
             and artifact_rune != "ᛁ"
+            and _pre_janus.get("mode") == "introspection"
+        ):
+            if (
+                "```bash" in artifact
+                or _is_safe_body_raw_bash(artifact)
+                or not _pre_janus_allows_action(_pre_janus)
+            ):
+                _sys_log("ᛉ introspection mode blocked outward action")
+        elif (
+            center in EXEC_CENTERS
+            and artifact_rune != "ᛁ"
             and not _pre_janus_allows_bash(_pre_janus)
         ):
             if "```bash" in artifact or _is_safe_body_raw_bash(artifact):
@@ -2417,7 +2512,9 @@ def conduct(raw_text: str) -> None:
             k_jera         = soc.k_jera,
             bash_facts     = bash_facts,
         )
-        if not _pre_janus_allows_bash(_pre_janus):
+        if _pre_janus.get("mode") == "introspection":
+            synthesis = _strip_outward_action_proposals(synthesis)
+        elif not _pre_janus_allows_bash(_pre_janus):
             synthesis = _strip_system_status_claims(
                 synthesis,
                 "системная диагностика не запрашивалась",

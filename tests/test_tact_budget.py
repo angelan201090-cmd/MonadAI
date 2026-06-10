@@ -48,18 +48,39 @@ class TestTactBudget(unittest.TestCase):
 
         frame = _pre_janus_frame("кто ты?")
         self.assertEqual(frame["intent"], "identity")
+        self.assertEqual(frame["mode"], "introspection")
         self.assertFalse(frame["diagnostic_authorized"])
+        self.assertFalse(frame["action_authorized"])
+        self.assertFalse(frame["bash_authorized"])
 
     def test_pre_janus_identity_body_stays_on_identity(self):
         from core.janus_conductor import _pre_janus_frame
 
         body_task = _pre_janus_frame("кто ты?")["micro_tasks"]["Body"]
-        self.assertIn(
-            "не проверяй порты/RAM; ответь о роли Тела в Монаде",
-            body_task,
-        )
+        self.assertIn("MonadaAI", body_task)
+        self.assertIn("local AI system", body_task)
+        self.assertIn("Monada-Hardcore", body_task)
+        self.assertIn("not a generic/esoteric monad", body_task)
+        self.assertIn("action='none'", body_task)
+        self.assertIn("Do not propose scripts", body_task)
         self.assertNotIn("free -h", body_task)
         self.assertNotIn("ss -tlnp", body_task)
+
+    def test_pre_janus_identity_has_project_anchor(self):
+        from core.janus_conductor import _pre_janus_frame
+
+        frame = _pre_janus_frame("кто ты?")
+        self.assertEqual(
+            frame["identity_anchor"],
+            "MonadaAI is the local multi-node AI system running this "
+            "Monada-Hardcore architecture; do not answer as generic "
+            "philosophical/esoteric Monad.",
+        )
+        for task in frame["micro_tasks"].values():
+            self.assertIn("MonadaAI", task)
+            self.assertIn("local AI system", task)
+            self.assertIn("Monada-Hardcore", task)
+            self.assertIn("not a generic/esoteric monad", task)
 
     def test_pre_janus_diagnostic_authorizes_safe_checks(self):
         from core.janus_conductor import _pre_janus_frame
@@ -85,13 +106,19 @@ class TestTactBudget(unittest.TestCase):
         http_post.assert_not_called()
         self.assertEqual(
             manifest["subtasks"]["Body"],
-            "не проверяй порты/RAM; ответь о роли Тела в Монаде",
+            frame["micro_tasks"]["Body"],
         )
 
     def test_pre_janus_identity_blocks_body_bash(self):
-        from core.janus_conductor import _pre_janus_allows_bash, _pre_janus_frame
+        from core.janus_conductor import (
+            _pre_janus_allows_action,
+            _pre_janus_allows_bash,
+            _pre_janus_frame,
+        )
 
-        self.assertFalse(_pre_janus_allows_bash(_pre_janus_frame("кто ты?")))
+        frame = _pre_janus_frame("кто ты?")
+        self.assertFalse(_pre_janus_allows_bash(frame))
+        self.assertFalse(_pre_janus_allows_action(frame))
 
     def test_pre_janus_identity_strips_system_status_claims(self):
         from core.janus_conductor import _strip_system_status_claims
@@ -107,10 +134,77 @@ class TestTactBudget(unittest.TestCase):
         self.assertNotIn("free -h", result)
 
     def test_pre_janus_diagnostic_allows_body_bash(self):
-        from core.janus_conductor import _pre_janus_allows_bash, _pre_janus_frame
+        from core.janus_conductor import (
+            _pre_janus_allows_action,
+            _pre_janus_allows_bash,
+            _pre_janus_frame,
+        )
 
-        self.assertTrue(
-            _pre_janus_allows_bash(_pre_janus_frame("проверь порты и память"))
+        frame = _pre_janus_frame("проверь порты и память")
+        self.assertTrue(_pre_janus_allows_bash(frame))
+        self.assertTrue(_pre_janus_allows_action(frame))
+
+    def test_introspection_filter_removes_outward_action_proposals(self):
+        from core.janus_conductor import _strip_outward_action_proposals
+
+        result = _strip_outward_action_proposals(
+            "Я — MonadaAI.\n\nЗапустить bash-скрипт /home/angelan/check.sh.",
+            "в режиме самонаблюдения внешние действия не запрашивались",
+        )
+        self.assertIn("Я — MonadaAI.", result)
+        self.assertIn(
+            "в режиме самонаблюдения внешние действия не запрашивались",
+            result,
+        )
+        self.assertNotIn("/home/", result)
+        self.assertNotIn("bash", result)
+
+    def test_introspection_final_preserves_identity_content(self):
+        from core.janus_conductor import (
+            _finalize_synthesis_for_mode,
+            _pre_janus_frame,
+        )
+
+        result = _finalize_synthesis_for_mode(
+            "Я — MonadaAI, локальная система архитектуры Monada-Hardcore.",
+            "Persona описывает MonadaAI.",
+            "",
+            _pre_janus_frame("кто ты?"),
+        )
+        self.assertIn("MonadaAI", result)
+        self.assertIn("Monada-Hardcore", result)
+
+    def test_introspection_final_filters_actions_and_falls_back_to_persona(self):
+        from core.janus_conductor import (
+            _finalize_synthesis_for_mode,
+            _pre_janus_frame,
+        )
+
+        result = _finalize_synthesis_for_mode(
+            "Запустить bash-скрипт /home/angelan/check.sh для RAM и портов.",
+            "Я — MonadaAI внутри Monada-Hardcore.",
+            "",
+            _pre_janus_frame("кто ты?"),
+        )
+        self.assertEqual(result, "Я — MonadaAI внутри Monada-Hardcore.")
+        for forbidden in ("RAM", "порт", "bash", "скрипт", "/home/"):
+            self.assertNotIn(forbidden, result)
+
+    def test_diagnostic_without_bash_facts_gets_warning(self):
+        from core.janus_conductor import (
+            _finalize_synthesis_for_mode,
+            _pre_janus_frame,
+        )
+
+        result = _finalize_synthesis_for_mode(
+            "RAM заполнена, порт 8083 активен.",
+            "Persona",
+            "",
+            _pre_janus_frame("проверь порты и память"),
+        )
+        self.assertEqual(
+            result,
+            "нет BASH_FACTS для проверки системного состояния",
         )
 
     def test_dyad_persona_shadow_share_endpoint(self):
