@@ -580,5 +580,192 @@ class TestStructuralInvariants(unittest.TestCase):
         self.assertGreaterEqual(pd.STELLAR_INTERVAL_SEC, 3600)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# v39.0: ThoughtSeed / ThoughtState / ThoughtDelta — слой наблюдения за мыслью
+# ─────────────────────────────────────────────────────────────────────────────
+class TestThoughtState(unittest.TestCase):
+
+    def test_seed_from_pre_janus_identity_frame(self):
+        """ThoughtSeed создаётся из PRE-JANUS identity frame."""
+        from core.janus_conductor import _pre_janus_frame, make_thought_seed
+        frame = _pre_janus_frame("кто ты?")
+        seed = make_thought_seed("кто ты?", frame)
+        self.assertEqual(seed["intent"], "identity")
+        self.assertEqual(seed["mode"], "introspection")
+        self.assertEqual(seed["archetype"], "Identity")
+        self.assertEqual(seed["question"], "кто ты?")
+        self.assertFalse(seed["diagnostic_authorized"])
+        self.assertFalse(seed["action_authorized"])
+        self.assertFalse(seed["bash_authorized"])
+        self.assertEqual(set(seed["micro_tasks"]), {"Head", "Heart", "Body"})
+        self.assertIn("MonadaAI", seed["micro_tasks"]["Head"])
+
+    def test_seed_fallback_without_pre_janus(self):
+        """Fallback ThoughtSeed детерминирован и создаётся без PRE-JANUS."""
+        from core.janus_conductor import make_thought_seed
+        seed = make_thought_seed("проверь систему", None)
+        seed2 = make_thought_seed("проверь систему", None)
+        self.assertEqual(seed, seed2)
+        self.assertEqual(seed["intent"], "fallback")
+        self.assertEqual(seed["question"], "проверь систему")
+        # Зеркалит разрешения disabled-пути conduct()
+        self.assertTrue(seed["bash_authorized"])
+        for c in ("Head", "Heart", "Body"):
+            self.assertTrue(seed["micro_tasks"][c])
+        # Frame без micro_tasks → тоже fallback
+        broken = make_thought_seed("x", {"intent": "disabled", "micro_tasks": {}})
+        self.assertEqual(broken["intent"], "fallback")
+
+    def test_thought_state_is_bounded(self):
+        """claims ≤ 7, open ≤ 7, constraints ≤ 7, trace ≤ 12 — при любом числе дельт."""
+        from core.janus_conductor import (
+            make_thought_seed, make_thought_state,
+            compute_thought_delta, apply_thought_delta,
+        )
+        ts = make_thought_state(make_thought_seed("x", None))
+        for i in range(20):
+            delta = compute_thought_delta(
+                deva=f"Deva{i}", center="Body",
+                artifact="БОЛЬ: ошибка, но порт 8081 жив, RAM в норме",
+                rune="ᛁ", action="bash", bash_success=True,
+                repeated=False, mode="introspection",
+                diagnostic_authorized=False,
+            )
+            apply_thought_delta(ts, delta)
+        self.assertLessEqual(len(ts["claims"]), 7)
+        self.assertLessEqual(len(ts["open"]), 7)
+        self.assertLessEqual(len(ts["constraints"]), 7)
+        self.assertLessEqual(len(ts["trace"]), 12)
+        for v in ts["metrics"].values():
+            self.assertGreaterEqual(v, 0.0)
+            self.assertLessEqual(v, 1.0)
+
+    def test_pain_delta_raises_risk_lowers_confidence(self):
+        """БОЛЬ/VETO/ошибка/галлюцинация → risk +0.2, confidence -0.1, open добавлен."""
+        from core.janus_conductor import compute_thought_delta
+        delta = compute_thought_delta(
+            deva="Shani", center="Head",
+            artifact="БОЛЬ: галлюцинация в выводе",
+            rune="ᛁ", action="none",
+        )
+        self.assertGreaterEqual(delta["metric_delta"]["risk"], 0.2)
+        self.assertLessEqual(delta["metric_delta"]["confidence"], -0.1)
+        self.assertTrue(delta["open"])
+        self.assertIn("pain", delta["reason"])
+
+    def test_bash_success_delta_raises_grounding(self):
+        """bash success → grounding +0.2, confidence +0.1, claim добавлен."""
+        from core.janus_conductor import compute_thought_delta
+        delta = compute_thought_delta(
+            deva="Mangala", center="Body",
+            artifact="ls -1 /tmp", rune="ᛃ", action="bash",
+            bash_success=True, diagnostic_authorized=True,
+        )
+        self.assertAlmostEqual(delta["metric_delta"]["grounding"], 0.2)
+        self.assertAlmostEqual(delta["metric_delta"]["confidence"], 0.1)
+        self.assertTrue(delta["claim"])
+        self.assertIn("bash_success", delta["reason"])
+
+    def test_introspection_identity_delta(self):
+        """Introspection + MonadaAI-артефакт без внешних действий → coherence/confidence."""
+        from core.janus_conductor import compute_thought_delta
+        delta = compute_thought_delta(
+            deva="Chandra", center="Heart",
+            artifact="MonadaAI — локальная система Monada-Hardcore; роль Сердца внутренняя.",
+            rune="ᛃ", action="none",
+            mode="introspection", diagnostic_authorized=False,
+        )
+        self.assertAlmostEqual(delta["metric_delta"]["coherence"], 0.1)
+        self.assertAlmostEqual(delta["metric_delta"]["confidence"], 0.05)
+        self.assertIn("introspective_identity", delta["reason"])
+
+    def test_unauthorized_diagnostic_adds_constraint(self):
+        """diagnostic_authorized=False + bash/порты/RAM → constraint + risk."""
+        from core.janus_conductor import (
+            compute_thought_delta, apply_thought_delta,
+            make_thought_seed, make_thought_state,
+        )
+        delta = compute_thought_delta(
+            deva="Mangala", center="Body",
+            artifact="Проверь порты: ss -tlnp и free -h, RAM 95%",
+            rune="ᛃ", action="none",
+            mode="introspection", diagnostic_authorized=False,
+        )
+        self.assertEqual(delta["constraint"], "outward action blocked by introspection")
+        self.assertGreaterEqual(delta["metric_delta"]["risk"], 0.2)
+        ts = make_thought_state(make_thought_seed("кто ты?", None))
+        apply_thought_delta(ts, delta)
+        self.assertIn("outward action blocked by introspection", ts["constraints"])
+
+    def test_last_thought_state_is_compact(self):
+        """compact_thought_state не содержит artifact-тел и длинных строк."""
+        from core.janus_conductor import (
+            make_thought_seed, make_thought_state, compute_thought_delta,
+            apply_thought_delta, compact_thought_state, THOUGHT_FIELD_MAXLEN,
+        )
+        ts = make_thought_state(make_thought_seed("задача " * 100, None))
+        big_artifact = "UNIQUEMARKER ошибка " * 300
+        delta = compute_thought_delta(
+            deva="Budha", center="Head", artifact=big_artifact,
+            rune="ᛁ", action="none",
+        )
+        apply_thought_delta(ts, delta)
+        ts["claims"].append("x" * 1000)
+        compact = compact_thought_state(ts)
+        dumped = json.dumps(compact, ensure_ascii=False)
+        # Большой artifact-текст не утёк в compact-форму
+        self.assertNotIn("UNIQUEMARKER", dumped)
+        self.assertLess(len(dumped), 6000)
+        for c in compact["claims"]:
+            self.assertLessEqual(len(c), THOUGHT_FIELD_MAXLEN)
+        self.assertLessEqual(len(compact["seed"]["question"]), 200)
+        for mt in compact["seed"]["micro_tasks"].values():
+            self.assertLessEqual(len(mt), 80)
+
+    def test_flag_off_keeps_conduct_path(self):
+        """THOUGHT_STATE_ENABLED=False: слой выключен, conduct-путь под guard'ами."""
+        import inspect
+        import core.janus_conductor as jc
+        self.assertTrue(hasattr(jc, "THOUGHT_STATE_ENABLED"))
+        src = inspect.getsource(jc.conduct)
+        # Создание — только под флагом; дельты и сохранение — только при живом state
+        self.assertIn("if THOUGHT_STATE_ENABLED:", src)
+        self.assertIn("_thought_state is not None", src)
+        self.assertIn("THOUGHT_STATE_ENABLED and _thought_state is not None", src)
+        with patch.object(jc, "THOUGHT_STATE_ENABLED", False):
+            # PRE-JANUS-путь не зависит от слоя мысли
+            frame = jc._pre_janus_frame("кто ты?")
+            manifest = jc._decompose_from_micro_tasks(
+                frame["micro_tasks"], ["Head", "Heart", "Body"], "кто ты?", "",
+            )
+            self.assertIn("subtasks", manifest)
+
+    def test_thought_layer_makes_no_llm_calls(self):
+        """Слой мысли детерминирован: ни одного HTTP/LLM-вызова → бюджет Януса не растёт."""
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            frame = jc._pre_janus_frame("кто ты?")
+            seed = jc.make_thought_seed("кто ты?", frame)
+            ts = jc.make_thought_state(seed, grounding=0.5)
+            delta = jc.compute_thought_delta(
+                deva="Shani", center="Head", artifact="анализ",
+                rune="ᛃ", action="none",
+            )
+            jc.apply_thought_delta(ts, delta)
+            jc.compact_thought_state(ts)
+        http_post.assert_not_called()
+
+    def test_fohat_chain_unchanged_by_v39(self):
+        """FOHAT_CHAIN не изменён: порядок 1-4-2-8-5-7 сохранён."""
+        from core.janus_conductor import FOHAT_CHAIN
+        self.assertEqual(
+            [(c, d) for c, d, _ in FOHAT_CHAIN],
+            [
+                ("Head", "Shani"), ("Heart", "Chandra"), ("Heart", "Shukra"),
+                ("Body", "Mangala"), ("Head", "Budha"), ("Head", "Rahu"),
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

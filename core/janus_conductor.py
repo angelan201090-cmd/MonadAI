@@ -32,6 +32,11 @@ from core.soc_engine import (
 # False — классический аккорд (3 Дэва по ноте). Спираль точнее, но 6 NPU-вызовов/такт.
 FOHATIC_MODE = True
 PRE_JANUS_ENABLED = True
+# v39.0: ThoughtSeed/ThoughtState/ThoughtDelta — детерминированный слой наблюдения
+# за мыслью. Дэв не пишет мысль — мысль проходит через Дэва (каждый артефакт
+# становится ThoughtDelta). При False conduct() работает как в v38: слой выключен,
+# last_thought_state не пишется.
+THOUGHT_STATE_ENABLED = True
 
 MONADA_ROOT        = "/home/angelan/data/Monada-Hardcore"
 DANCEFLOOR         = "/mnt/dancefloor"
@@ -1447,6 +1452,252 @@ def _decompose_from_micro_tasks(
     return {"plan": plan, "subtasks": subtasks}
 
 
+# ── v39.0: ThoughtSeed / ThoughtState / ThoughtDelta ─────────────────────────
+# Внутренний субстрат мысли. Все метрики считает код — числовые самооценки LLM
+# игнорируются. ThoughtState компактен и ограничен: это сосуд текущей мысли,
+# а не лог и не транскрипт. Artifact-тексты сюда не попадают.
+THOUGHT_MAX_CLAIMS      = 7
+THOUGHT_MAX_OPEN        = 7
+THOUGHT_MAX_CONSTRAINTS = 7
+THOUGHT_MAX_TRACE       = 12
+THOUGHT_FIELD_MAXLEN    = 160
+
+# Маркеры внешнего действия (bash/порты/RAM) — для introspection-ограничений.
+_THOUGHT_OUTWARD_CASE   = ("```bash", "free -h", "ss -tlnp", "RAM")
+_THOUGHT_OUTWARD_LOWER  = ("порт", " port", " ram ")
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def make_thought_seed(raw_text: str, pre_janus_frame: dict | None) -> dict:
+    """ThoughtSeed — зародыш мысли из raw_text + PRE-JANUS frame.
+
+    Если PRE-JANUS выключен/сломан (frame=None или без micro_tasks) —
+    детерминированный fallback, зеркалящий разрешения disabled-пути conduct().
+    """
+    if isinstance(pre_janus_frame, dict) and pre_janus_frame.get("micro_tasks"):
+        mt = pre_janus_frame.get("micro_tasks") or {}
+        return {
+            "intent":    str(pre_janus_frame.get("intent", "default")),
+            "question":  str(raw_text)[:300],
+            "mode":      str(pre_janus_frame.get("mode", "default")),
+            "archetype": str(pre_janus_frame.get("archetype", "General")),
+            "diagnostic_authorized": bool(pre_janus_frame.get("diagnostic_authorized", False)),
+            "action_authorized":     bool(pre_janus_frame.get("action_authorized", False)),
+            "bash_authorized":       bool(pre_janus_frame.get("bash_authorized", False)),
+            "micro_tasks": {
+                c: str(mt.get(c, ""))[:200] for c in ("Head", "Heart", "Body")
+            },
+        }
+    return {
+        "intent":    "fallback",
+        "question":  str(raw_text)[:300],
+        "mode":      "default",
+        "archetype": "General",
+        "diagnostic_authorized": True,
+        "action_authorized":     True,
+        "bash_authorized":       True,
+        "micro_tasks": {
+            "Head":  f"Анализ и план решения: {str(raw_text)[:160]}",
+            "Heart": f"Аудит, альтернативы: {str(raw_text)[:160]}",
+            "Body":  str(raw_text)[:200],
+        },
+    }
+
+
+def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
+    """ThoughtState — ограниченное состояние текущей мысли."""
+    return {
+        "seed":        seed,
+        "claims":      [],
+        "open":        [],
+        "constraints": [],
+        "metrics": {
+            "grounding":  _clamp01(grounding),
+            "coherence":  0.5,
+            "risk":       0.0,
+            "novelty":    0.0,
+            "confidence": 0.5,
+        },
+        "trace": [],
+    }
+
+
+def compute_thought_delta(
+    *,
+    deva: str,
+    center: str,
+    artifact: str,
+    rune: str,
+    action: str,
+    bash_success: bool | None = None,
+    repeated: bool = False,
+    mode: str = "",
+    diagnostic_authorized: bool = True,
+) -> dict:
+    """ThoughtDelta — детерминированное преобразование мысли Дэвом.
+
+    Считается ТОЛЬКО кодом по маркерам артефакта и фактам такта.
+    LLM не спрашивается; числовые самооценки LLM сюда не попадают.
+    """
+    text    = artifact or ""
+    lowered = text.lower()
+    md = {"grounding": 0.0, "coherence": 0.0, "risk": 0.0,
+          "novelty": 0.0, "confidence": 0.0}
+    claim = open_q = constraint = None
+    reasons: list[str] = []
+
+    pain = (
+        any(m in text for m in ("БОЛЬ", "VETO"))
+        or any(m in lowered for m in ("ошибка", "галлюцинаци"))
+    )
+    if pain:
+        md["risk"]       += 0.2
+        md["confidence"] -= 0.1
+        open_q = f"{deva}: pain/veto marker in artifact"
+        reasons.append("pain")
+
+    if "APPROVED" in text or any(m in lowered for m in ("успех", "подтверждено")):
+        md["confidence"] += 0.1
+        md["coherence"]  += 0.1
+        reasons.append("approved")
+
+    if bash_success is True:
+        md["grounding"]  += 0.2
+        md["confidence"] += 0.1
+        claim = f"{deva}: bash verified"
+        reasons.append("bash_success")
+    elif bash_success is False:
+        md["grounding"] -= 0.1
+        md["risk"]      += 0.2
+        open_q = open_q or f"{deva}: bash failed"
+        reasons.append("bash_failure")
+
+    outward = (
+        any(m in text for m in _THOUGHT_OUTWARD_CASE)
+        or any(m in lowered for m in _THOUGHT_OUTWARD_LOWER)
+    )
+    if outward and not diagnostic_authorized:
+        md["risk"] += 0.2
+        constraint = "outward action blocked by introspection"
+        reasons.append("outward_blocked")
+
+    if (
+        mode == "introspection"
+        and not outward
+        and ("MonadaAI" in text or "Monada-Hardcore" in text)
+    ):
+        md["coherence"]  += 0.1
+        md["confidence"] += 0.05
+        reasons.append("introspective_identity")
+
+    if repeated or len(text) > 1200:
+        md["coherence"] -= 0.1
+        md["risk"]      += 0.1
+        reasons.append("verbose_or_repeated")
+
+    return {
+        "deva":       deva,
+        "center":     center,
+        "rune":       rune,
+        "action":     action,
+        "claim":      claim,
+        "open":       open_q,
+        "constraint": constraint,
+        "metric_delta": md,
+        "reason":     ",".join(reasons) or "neutral",
+    }
+
+
+def _compact_delta(delta: dict) -> dict:
+    """Компактная форма дельты для trace/field_state — без artifact-текстов."""
+    def _opt(key: str):
+        v = delta.get(key)
+        return str(v)[:THOUGHT_FIELD_MAXLEN] if v else None
+    return {
+        "deva":       str(delta.get("deva", ""))[:24],
+        "center":     str(delta.get("center", ""))[:8],
+        "rune":       str(delta.get("rune", ""))[:4],
+        "action":     str(delta.get("action", ""))[:16],
+        "claim":      _opt("claim"),
+        "open":       _opt("open"),
+        "constraint": _opt("constraint"),
+        "metric_delta": {
+            k: round(float(v), 4)
+            for k, v in (delta.get("metric_delta") or {}).items()
+        },
+        "reason":     str(delta.get("reason", ""))[:80],
+    }
+
+
+def apply_thought_delta(thought_state: dict, delta: dict) -> None:
+    """Применяет ThoughtDelta: метрики клампятся в [0,1], списки ограничены.
+
+    trace — append-only внутри такта, max THOUGHT_MAX_TRACE записей.
+    """
+    metrics = thought_state["metrics"]
+    for key, dv in (delta.get("metric_delta") or {}).items():
+        if key in metrics:
+            metrics[key] = round(_clamp01(metrics[key] + dv), 4)
+    if delta.get("claim") and len(thought_state["claims"]) < THOUGHT_MAX_CLAIMS:
+        thought_state["claims"].append(str(delta["claim"])[:THOUGHT_FIELD_MAXLEN])
+    if delta.get("open") and len(thought_state["open"]) < THOUGHT_MAX_OPEN:
+        thought_state["open"].append(str(delta["open"])[:THOUGHT_FIELD_MAXLEN])
+    if (
+        delta.get("constraint")
+        and str(delta["constraint"])[:THOUGHT_FIELD_MAXLEN] not in thought_state["constraints"]
+        and len(thought_state["constraints"]) < THOUGHT_MAX_CONSTRAINTS
+    ):
+        thought_state["constraints"].append(str(delta["constraint"])[:THOUGHT_FIELD_MAXLEN])
+    if len(thought_state["trace"]) < THOUGHT_MAX_TRACE:
+        thought_state["trace"].append(_compact_delta(delta))
+
+
+def compact_thought_state(thought_state: dict) -> dict:
+    """Bounded-форма ThoughtState для state["last_thought_state"].
+
+    Только compact JSON: усечённые строки, никаких artifact-тел.
+    """
+    seed = thought_state.get("seed") or {}
+    mt   = seed.get("micro_tasks") or {}
+    return {
+        "seed": {
+            "intent":    str(seed.get("intent", ""))[:32],
+            "question":  str(seed.get("question", ""))[:200],
+            "mode":      str(seed.get("mode", ""))[:32],
+            "archetype": str(seed.get("archetype", ""))[:32],
+            "diagnostic_authorized": bool(seed.get("diagnostic_authorized", False)),
+            "action_authorized":     bool(seed.get("action_authorized", False)),
+            "bash_authorized":       bool(seed.get("bash_authorized", False)),
+            "micro_tasks": {
+                c: str(mt.get(c, ""))[:80] for c in ("Head", "Heart", "Body")
+            },
+        },
+        "claims": [
+            str(c)[:THOUGHT_FIELD_MAXLEN]
+            for c in (thought_state.get("claims") or [])[:THOUGHT_MAX_CLAIMS]
+        ],
+        "open": [
+            str(o)[:THOUGHT_FIELD_MAXLEN]
+            for o in (thought_state.get("open") or [])[:THOUGHT_MAX_OPEN]
+        ],
+        "constraints": [
+            str(c)[:THOUGHT_FIELD_MAXLEN]
+            for c in (thought_state.get("constraints") or [])[:THOUGHT_MAX_CONSTRAINTS]
+        ],
+        "metrics": {
+            k: round(float(v), 4)
+            for k, v in (thought_state.get("metrics") or {}).items()
+        },
+        "trace": [
+            _compact_delta(d)
+            for d in (thought_state.get("trace") or [])[:THOUGHT_MAX_TRACE]
+        ],
+    }
+
+
 def _generate_deva_roles(raw_text: str, devas_by_center: dict, note_name: str) -> dict:
     result = {
         c: f"Ты — {d} ({DEVA_PLANET.get(d,'?')}). {DEVA_LEAN_SEED.get(d,'узел Монады')}."
@@ -2042,6 +2293,24 @@ def conduct(raw_text: str) -> None:
             "micro_tasks": {},
         }
     )
+
+    # ── v39.0: ThoughtSeed → ThoughtState (слой наблюдения, поведение не меняет) ──
+    _thought_state: dict | None = None
+    if THOUGHT_STATE_ENABLED:
+        try:
+            _thought_seed = make_thought_seed(
+                _at.get("original") or raw_text,
+                _pre_janus if PRE_JANUS_ENABLED else None,
+            )
+            _thought_state = make_thought_state(_thought_seed, grounding=_grounding)
+            _sys_log(
+                "[THOUGHT] seed "
+                f"intent={_thought_seed['intent']} mode={_thought_seed['mode']}"
+            )
+        except Exception as _ts_err:
+            _thought_state = None
+            _sys_log(f"[THOUGHT] seed failed: {_ts_err}")
+
     if _resuming:
         # Берём существующий манифест, не запрашиваем Янус заново
         manifest      = {"plan": _at.get("plan", raw_text), "subtasks": {
@@ -2260,6 +2529,9 @@ def conduct(raw_text: str) -> None:
 
         center = _c
         deva   = _d
+        # v39.0: счёт bash-фактов до exec-секции — чтобы ThoughtDelta видела
+        # только bash-исходы ИМЕННО этой итерации (этого Дэвы).
+        _bf_before_deva = len(_bash_fact_parts)
 
         # SOC-разряд — один раз за такт на центр
         if center not in fired_set:
@@ -2363,6 +2635,32 @@ def conduct(raw_text: str) -> None:
                 new_artifacts.append(_proposal)
                 _pending_bash.append(script)
                 _sys_log(f"⚡ Bash выполнен до Януса: {result[:120]}")
+
+        # ── v39.0: ThoughtDelta — мысль проходит через Дэва ───────────────────
+        # Детерминированно, без LLM; ошибка слоя не трогает conduct-путь.
+        if _thought_state is not None:
+            try:
+                _new_bash_facts = _bash_fact_parts[_bf_before_deva:]
+                _deva_bash_ok = (
+                    None if not _new_bash_facts
+                    else all("--- УСПЕХ" in p for p in _new_bash_facts)
+                )
+                _td = compute_thought_delta(
+                    deva=deva,
+                    center=center,
+                    artifact=artifact,
+                    rune=artifact_rune,
+                    action="bash" if _deva_bash_ok is not None else "none",
+                    bash_success=_deva_bash_ok,
+                    repeated=bool(repeats_collapsed),
+                    mode=_pre_janus.get("mode", ""),
+                    diagnostic_authorized=bool(
+                        _pre_janus.get("diagnostic_authorized", False)
+                    ),
+                )
+                apply_thought_delta(_thought_state, _td)
+            except Exception as _td_err:
+                _sys_log(f"[THOUGHT] delta failed: {_td_err}")
 
         state["current_node"] = f"Node_{center}_{deva}"
         state["active_role"]  = deva
@@ -2770,6 +3068,21 @@ def conduct(raw_text: str) -> None:
         _sys_log(f"〰️  grounding={_grounding:.2f} — искажение реальности (ст.2)")
     else:
         _sys_log(f"⚓ grounding={_grounding:.2f} — заземлено (ст.1)")
+
+    # ── v39.0: bounded ThoughtState такта → field_state (compact, без artifact-тел) ──
+    if THOUGHT_STATE_ENABLED and _thought_state is not None:
+        try:
+            state["last_thought_state"] = compact_thought_state(_thought_state)
+            _tm = state["last_thought_state"]["metrics"]
+            _sys_log(
+                "[THOUGHT] tact done: "
+                f"claims={len(state['last_thought_state']['claims'])} "
+                f"open={len(state['last_thought_state']['open'])} "
+                f"risk={_tm.get('risk', 0.0):.2f} "
+                f"conf={_tm.get('confidence', 0.0):.2f}"
+            )
+        except Exception as _ts_save_err:
+            _sys_log(f"[THOUGHT] compact failed: {_ts_save_err}")
 
     tmp = FIELD_STATE + ".tmp"
     try:
