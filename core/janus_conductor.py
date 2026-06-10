@@ -31,6 +31,7 @@ from core.soc_engine import (
 # True — запрос восходит по 6 планам (Body·Heart·Head × 2 октавы) → Янус (Ади).
 # False — классический аккорд (3 Дэва по ноте). Спираль точнее, но 6 NPU-вызовов/такт.
 FOHATIC_MODE = True
+PRE_JANUS_ENABLED = False
 
 MONADA_ROOT        = "/home/angelan/data/Monada-Hardcore"
 DANCEFLOOR         = "/mnt/dancefloor"
@@ -930,14 +931,50 @@ def _collapse_repeated_paragraphs(
         if paragraph.strip()
     ]
     seen: Counter[str] = Counter()
+    phrase_seen: Counter[str] = Counter()
     collapsed = []
     for paragraph in paragraphs:
         if seen[paragraph] >= max_repeats:
             continue
         seen[paragraph] += 1
-        collapsed.append(paragraph)
+        if paragraph.startswith("```") and paragraph.endswith("```"):
+            collapsed.append(paragraph)
+            continue
+
+        phrases = re.split(r"(?<=[.!?])\s+", paragraph)
+        kept_phrases = []
+        for phrase in phrases:
+            normalized = phrase.strip()
+            if not normalized or phrase_seen[normalized] >= max_repeats:
+                continue
+            phrase_seen[normalized] += 1
+            kept_phrases.append(normalized)
+        collapsed.append(" ".join(kept_phrases))
     collapsed_text = "\n\n".join(collapsed)
     return collapsed_text, collapsed_text != text
+
+
+def _block_unverified_system_claims(text: str, bash_facts: str) -> str:
+    if bash_facts:
+        return text
+    fallback = "нет BASH_FACTS для проверки системного состояния"
+    markers = re.compile(
+        r"\b(?:ram|ports?|listen|mem:)\b|памят|порт|808[1-6]",
+        re.IGNORECASE,
+    )
+    kept = []
+    replaced = False
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if markers.search(paragraph):
+            if not replaced:
+                kept.append(fallback)
+                replaced = True
+            continue
+        kept.append(paragraph)
+    return "\n\n".join(kept)
 
 
 def janus_dyad(
@@ -1063,6 +1100,7 @@ def janus_dyad(
     }, timeout=180)
     synthesis = _extract_janus_content(synth_raw, "Синтез")
     synthesis = _protect_literals(synthesis, f"{task}\n{persona_text}")
+    synthesis = _block_unverified_system_claims(synthesis, bash_facts)
     synthesis, repeats_collapsed = _collapse_repeated_paragraphs(synthesis)
     if repeats_collapsed:
         _sys_log("ᛁ synthesis repeat collapsed")
@@ -1232,6 +1270,74 @@ def _decompose_task(raw_text: str, ready_centers: list, brief_ctx: str) -> dict:
         else:
             subtasks[center] = raw_text
     _sys_log(f"🗺 [ДЕКОМП] {plan[:80]}")
+    return {"plan": plan, "subtasks": subtasks}
+
+
+def _pre_janus_frame(raw_text: str) -> dict:
+    lowered = raw_text.lower()
+    identity_markers = ("кто ты", "что ты", "who are you", "what are you")
+    diagnostic_markers = (
+        "проверь порт", "порты", "ram", "память",
+        "free -h", "ss -tlnp", "диагност",
+    )
+
+    if any(marker in lowered for marker in identity_markers):
+        return {
+            "intent": "identity",
+            "diagnostic_authorized": False,
+            "archetype": "Identity",
+            "micro_tasks": {
+                "Head": "Объясни идентичность и назначение Монады.",
+                "Heart": "Опиши характер и ценности Монады без системной диагностики.",
+                "Body": "не проверяй порты/RAM; ответь о роли Тела в Монаде",
+            },
+        }
+
+    if any(marker in lowered for marker in diagnostic_markers):
+        return {
+            "intent": "diagnostic",
+            "diagnostic_authorized": True,
+            "archetype": "Diagnostics",
+            "micro_tasks": {
+                "Head": f"Определи минимальный план системной диагностики: {raw_text}",
+                "Heart": "Проверь риски и достаточность диагностического плана.",
+                "Body": (
+                    "Выполни только безопасную проверку запрошенного состояния "
+                    "через free -h и/или ss -tlnp."
+                ),
+            },
+        }
+
+    return {
+        "intent": "default",
+        "diagnostic_authorized": False,
+        "archetype": "General",
+        "micro_tasks": {
+            "Head": f"Анализ и план решения: {raw_text}",
+            "Heart": f"Аудит, альтернативы, эмоциональная оценка: {raw_text}",
+            "Body": raw_text,
+        },
+    }
+
+
+def _decompose_from_micro_tasks(
+    micro_tasks,
+    ready_centers,
+    fallback_raw_text,
+    shared_ctx,
+) -> dict:
+    if not isinstance(micro_tasks, dict):
+        return _decompose_task(fallback_raw_text, ready_centers, shared_ctx[:600])
+
+    subtasks = {}
+    for center in ready_centers:
+        task = micro_tasks.get(center)
+        if not isinstance(task, str) or not task.strip():
+            return _decompose_task(fallback_raw_text, ready_centers, shared_ctx[:600])
+        subtasks[center] = task.strip()
+
+    plan = fallback_raw_text.split("\n")[0][:160]
+    _sys_log(f"🗺 [PRE-JANUS] {plan[:80]}")
     return {"plan": plan, "subtasks": subtasks}
 
 
@@ -1825,6 +1931,14 @@ def conduct(raw_text: str) -> None:
             c: v["subtask"] for c, v in _at["centers"].items() if not v.get("done")
         }}
         _at["octave"] = _at.get("octave", 1) + 1
+    elif PRE_JANUS_ENABLED:
+        _pre_janus = _pre_janus_frame(raw_text)
+        manifest = _decompose_from_micro_tasks(
+            _pre_janus.get("micro_tasks"),
+            ready_centers,
+            raw_text,
+            shared_ctx,
+        )
     else:
         manifest = _decompose_task(raw_text, ready_centers, shared_ctx[:600])
     manifest_plan = manifest.get("plan", raw_text)
@@ -2016,6 +2130,9 @@ def conduct(raw_text: str) -> None:
             current_note=current_note, role_prompt=_rp,
             nerve_prompt=_nerve_prompt,
         )
+        artifact, repeats_collapsed = _collapse_repeated_paragraphs(artifact)
+        if repeats_collapsed:
+            _sys_log("ᛁ deva repeat collapsed")
 
         center = _c
         deva   = _d

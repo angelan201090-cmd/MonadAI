@@ -43,6 +43,33 @@ class TestTactBudget(unittest.TestCase):
             ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
         )
 
+    def test_pre_janus_identity_blocks_diagnostics(self):
+        from core.janus_conductor import _pre_janus_frame
+
+        frame = _pre_janus_frame("кто ты?")
+        self.assertEqual(frame["intent"], "identity")
+        self.assertFalse(frame["diagnostic_authorized"])
+
+    def test_pre_janus_identity_body_stays_on_identity(self):
+        from core.janus_conductor import _pre_janus_frame
+
+        body_task = _pre_janus_frame("кто ты?")["micro_tasks"]["Body"]
+        self.assertIn(
+            "не проверяй порты/RAM; ответь о роли Тела в Монаде",
+            body_task,
+        )
+        self.assertNotIn("free -h", body_task)
+        self.assertNotIn("ss -tlnp", body_task)
+
+    def test_pre_janus_diagnostic_authorizes_safe_checks(self):
+        from core.janus_conductor import _pre_janus_frame
+
+        frame = _pre_janus_frame("проверь порты и память")
+        self.assertEqual(frame["intent"], "diagnostic")
+        self.assertTrue(frame["diagnostic_authorized"])
+        self.assertIn("free -h", frame["micro_tasks"]["Body"])
+        self.assertIn("ss -tlnp", frame["micro_tasks"]["Body"])
+
     def test_dyad_persona_shadow_share_endpoint(self):
         """ПЕРСОНА и ТЕНЬ делят один llama-server (8084, shared Gemma); Синтез отдельно (8086).
 
@@ -89,6 +116,7 @@ class TestTactBudget(unittest.TestCase):
         """Интеграционный: conduct() с мок-HTTP делает ≤ 9 LLM-запросов."""
         import core.janus_conductor as jc
 
+        self.assertFalse(jc.PRE_JANUS_ENABLED)
         stub_ok = json.dumps({
             "choices": [{"message": {"content": "ᛁ тест"}}]
         })
