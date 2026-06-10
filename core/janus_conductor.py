@@ -1655,6 +1655,176 @@ def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
     }
 
 
+# ── v40.1: семантическая экстракция — ThoughtState накапливает смысл ─────────
+# Детерминированные эвристики (без LLM) вытаскивают из артефактов Дэвов
+# компактные claims/open/constraints/contradictions (≤160 симв. каждый).
+# Основы слов (не полные формы) — русская морфология: «системы/системе» и т.д.
+_CLAIM_ANCHOR_TERMS = (
+    "monadaai", "monada-hardcore", "памят", "thoughtstate", "архитектур",
+    "систем", "дэв", "янус", "bash_facts", "grounding", "галлюцинаци",
+)
+_OPEN_ISSUE_MARKERS = (
+    "недостаточно данных", "неизвестно", "нет подтверждения",
+    "требуется", "несоответствие", "галлюцинаци", "ошибка",
+)
+# Анти-эхо: Дэвы цитируют инжектированную сводку [THOUGHT_STATE] и куски
+# системного промпта — такие предложения не являются смыслом мысли.
+_ECHO_NOISE_MARKERS = (
+    "thought_state", "metrics:", "intent=", "question=", "last_delta",
+    "grounding=", "пиши «боль", "план_януса", "твоя_микрозадача",
+    "shared_experience", "интро_гипотеза",
+)
+_CLAIM_SHELL_RE = re.compile(
+    r"```|\$\s|/home/|/mnt/|/etc/|\.sh\b|\.py\b|\bbash\b|скрипт|script"
+    r"|\b(ls|cat|mkdir|sudo|curl|grep|find|chmod|chown|rm|mv|cp|ps|df|du"
+    r"|free|ss|systemctl|netstat)\b",
+    re.IGNORECASE,
+)
+_CLAIM_STATUS_RE = re.compile(
+    r"порт|\bports?\b|\bram\b|808[1-6]|\blisten\b|mem:|прослушив"
+    r"|free\s+-h|ss\s+-tlnp",
+    re.IGNORECASE,
+)
+_DIAG_CONTENT_RE = re.compile(
+    r"free\s+-h|ss\s+-tlnp|диагност|прослушив|808[1-6]",
+    re.IGNORECASE,
+)
+_EXEC_MARKER_RE = re.compile(
+    r"\bbash\b|script|скрипт|\.sh\b|\.py\b|/home/|/mnt/|```|\bcode\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_artifact_for_extraction(text: str) -> str:
+    """Снимает код-блоки, JSON-обёртку и руны; нормализует пробелы."""
+    t = re.sub(r"```.*?```", " ", text or "", flags=re.DOTALL)
+    t = re.sub(r"`[^`]*`", " ", t)
+    t = re.sub(r"[ᚠ-᛿]", " ", t)
+    t = re.sub(r'[{}\[\]"]', " ", t)
+    t = re.sub(r"\b(artifact|rune|action)\s*:\s*", " ", t, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _norm_thought_text(s) -> str:
+    return re.sub(r"\s+", " ", str(s)).strip().lower()
+
+
+def _is_near_duplicate_thought(candidate, existing: list) -> bool:
+    """Точный дубль или совпадение нормализованного префикса >80 символов."""
+    cand = _norm_thought_text(candidate)
+    for item in existing:
+        norm = _norm_thought_text(item)
+        if cand == norm:
+            return True
+        if len(cand) > 80 and len(norm) > 80 and cand[:80] == norm[:80]:
+            return True
+    return False
+
+
+def _extract_semantic_claim(
+    artifact_text: str,
+    pre_janus_frame: dict,
+    thought_state: dict,
+) -> str | None:
+    """Первое осмысленное предложение с якорным термином проекта (≤160).
+
+    Не извлекает: shell-команды, системный статус без diagnostic_authorized,
+    боль/неопределённость, generic 'задача принята', дубли имеющихся claims.
+    """
+    frame = pre_janus_frame if isinstance(pre_janus_frame, dict) else {}
+    text = _clean_artifact_for_extraction(artifact_text or "")
+    if not text:
+        return None
+    existing = (
+        (thought_state.get("claims") or [])
+        if isinstance(thought_state, dict) else []
+    )
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        s = sentence.strip()
+        if len(s) < 15:
+            continue
+        low = s.lower()
+        if "задача принята" in low:
+            continue
+        if any(m in low for m in _ECHO_NOISE_MARKERS):
+            continue
+        if "боль" in low or "veto" in low:
+            continue
+        if any(m in low for m in _OPEN_ISSUE_MARKERS):
+            continue
+        if _CLAIM_SHELL_RE.search(s):
+            continue
+        if _CLAIM_STATUS_RE.search(s) and not frame.get("diagnostic_authorized"):
+            continue
+        if not any(term in low for term in _CLAIM_ANCHOR_TERMS):
+            continue
+        if _is_near_duplicate_thought(s, existing):
+            continue
+        return s[:THOUGHT_FIELD_MAXLEN]
+    return None
+
+
+def _extract_open_question_or_issue(artifact_text: str) -> str | None:
+    """Открытый вопрос/проблема из маркеров боли и неопределённости (≤160)."""
+    text = _clean_artifact_for_extraction(artifact_text or "")
+    if not text:
+        return None
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        s = sentence.strip()
+        if len(s) < 10:
+            continue
+        low = s.lower()
+        if "боль:" not in low and not any(m in low for m in _OPEN_ISSUE_MARKERS):
+            continue
+        if any(m in low for m in _ECHO_NOISE_MARKERS):
+            continue
+        if _CLAIM_SHELL_RE.search(s):
+            continue
+        s = re.sub(r"^\s*БОЛЬ\s*:\s*", "", s, flags=re.IGNORECASE).strip()
+        if s:
+            return s[:THOUGHT_FIELD_MAXLEN]
+    return None
+
+
+def _extract_constraint(artifact_text: str, pre_janus_frame: dict) -> str | None:
+    """Ограничение мысли из режима PRE-JANUS и содержимого артефакта (≤160)."""
+    frame = pre_janus_frame if isinstance(pre_janus_frame, dict) else {}
+    mode = str(frame.get("mode", "") or "")
+    text = artifact_text or ""
+    lowered = text.lower()
+    outward = bool(
+        any(m in text for m in _THOUGHT_OUTWARD_CASE)
+        or any(m in lowered for m in _THOUGHT_OUTWARD_LOWER)
+        or _CLAIM_SHELL_RE.search(text)
+    )
+    if mode in _REFLECTIVE_MODES and outward:
+        return f"outward action blocked by {mode}"[:THOUGHT_FIELD_MAXLEN]
+    if mode == "introspection" and "монад" in lowered and any(
+        m in lowered for m in ("эзотер", "философ", "метафиз", "лейбниц")
+    ):
+        return "identity must stay anchored to MonadaAI, not generic monad"
+    if (
+        mode and mode != "diagnostic"
+        and not frame.get("diagnostic_authorized")
+        and _DIAG_CONTENT_RE.search(text)
+    ):
+        return f"system diagnostics not authorized for {mode}"[:THOUGHT_FIELD_MAXLEN]
+    return None
+
+
+def _extract_contradiction(artifact_text: str, thought_state: dict) -> str | None:
+    """Внутреннее противоречие артефакта (≤160). Детерминированно, без LLM."""
+    text = artifact_text or ""
+    lowered = text.lower()
+    if "не исполняю" in lowered and _EXEC_MARKER_RE.search(text):
+        return "artifact denies execution but proposes executable action"
+    if any(m in lowered for m in ("нет данных", "нет подтверждения")) and any(
+        m in lowered for m in ("подтверждено", "готово", "стабильно")
+    ):
+        return "artifact mixes unsupported uncertainty with confirmation"
+    return None
+
+
 def compute_thought_delta(
     *,
     deva: str,
@@ -1666,6 +1836,8 @@ def compute_thought_delta(
     repeated: bool = False,
     mode: str = "",
     diagnostic_authorized: bool = True,
+    pre_janus_frame: dict | None = None,
+    thought_state: dict | None = None,
 ) -> dict:
     """ThoughtDelta — детерминированное преобразование мысли Дэвом.
 
@@ -1728,6 +1900,28 @@ def compute_thought_delta(
         md["risk"]      += 0.1
         reasons.append("verbose_or_repeated")
 
+    # ── v40.1: семантическая экстракция — мысль накапливает смысл ────────────
+    _frame = (
+        pre_janus_frame
+        if isinstance(pre_janus_frame, dict)
+        else {"mode": mode, "diagnostic_authorized": diagnostic_authorized}
+    )
+    if claim is None:
+        claim = _extract_semantic_claim(text, _frame, thought_state or {})
+        if claim:
+            reasons.append("semantic_claim")
+    sem_open = _extract_open_question_or_issue(text)
+    if sem_open:
+        open_q = sem_open
+        reasons.append("semantic_open")
+    if constraint is None:
+        constraint = _extract_constraint(text, _frame)
+        if constraint:
+            reasons.append("semantic_constraint")
+    contradiction = _extract_contradiction(text, thought_state or {})
+    if contradiction:
+        reasons.append("contradiction")
+
     return {
         "deva":       deva,
         "center":     center,
@@ -1736,6 +1930,7 @@ def compute_thought_delta(
         "claim":      claim,
         "open":       open_q,
         "constraint": constraint,
+        "contradiction": contradiction,
         "metric_delta": md,
         "reason":     ",".join(reasons) or "neutral",
     }
@@ -1754,6 +1949,7 @@ def _compact_delta(delta: dict) -> dict:
         "claim":      _opt("claim"),
         "open":       _opt("open"),
         "constraint": _opt("constraint"),
+        "contradiction": _opt("contradiction"),
         "metric_delta": {
             k: round(float(v), 4)
             for k, v in (delta.get("metric_delta") or {}).items()
@@ -1765,22 +1961,62 @@ def _compact_delta(delta: dict) -> dict:
 def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     """Применяет ThoughtDelta: метрики клампятся в [0,1], списки ограничены.
 
+    v40.1: дедуп (точный + префикс >80 симв.), contradiction → open с
+    префиксом 'contradiction:', метрики добавления начисляются ТОЛЬКО когда
+    элемент реально добавлен (дубли не накручивают уверенность).
     trace — append-only внутри такта, max THOUGHT_MAX_TRACE записей.
     """
     metrics = thought_state["metrics"]
-    for key, dv in (delta.get("metric_delta") or {}).items():
-        if key in metrics:
-            metrics[key] = round(_clamp01(metrics[key] + dv), 4)
-    if delta.get("claim") and len(thought_state["claims"]) < THOUGHT_MAX_CLAIMS:
-        thought_state["claims"].append(str(delta["claim"])[:THOUGHT_FIELD_MAXLEN])
-    if delta.get("open") and len(thought_state["open"]) < THOUGHT_MAX_OPEN:
-        thought_state["open"].append(str(delta["open"])[:THOUGHT_FIELD_MAXLEN])
+    refine = {"grounding": 0.0, "coherence": 0.0, "risk": 0.0,
+              "novelty": 0.0, "confidence": 0.0}
+
+    claim = delta.get("claim")
     if (
-        delta.get("constraint")
-        and str(delta["constraint"])[:THOUGHT_FIELD_MAXLEN] not in thought_state["constraints"]
-        and len(thought_state["constraints"]) < THOUGHT_MAX_CONSTRAINTS
+        claim
+        and len(thought_state["claims"]) < THOUGHT_MAX_CLAIMS
+        and not _is_near_duplicate_thought(claim, thought_state["claims"])
     ):
-        thought_state["constraints"].append(str(delta["constraint"])[:THOUGHT_FIELD_MAXLEN])
+        thought_state["claims"].append(str(claim)[:THOUGHT_FIELD_MAXLEN])
+        refine["confidence"] += 0.05
+        refine["coherence"]  += 0.05
+
+    open_q = delta.get("open")
+    if (
+        open_q
+        and len(thought_state["open"]) < THOUGHT_MAX_OPEN
+        and not _is_near_duplicate_thought(open_q, thought_state["open"])
+    ):
+        thought_state["open"].append(str(open_q)[:THOUGHT_FIELD_MAXLEN])
+        refine["risk"]       += 0.05
+        refine["confidence"] -= 0.03
+
+    constraint = delta.get("constraint")
+    if (
+        constraint
+        and len(thought_state["constraints"]) < THOUGHT_MAX_CONSTRAINTS
+        and not _is_near_duplicate_thought(constraint, thought_state["constraints"])
+    ):
+        thought_state["constraints"].append(
+            str(constraint)[:THOUGHT_FIELD_MAXLEN]
+        )
+        refine["risk"]      += 0.05
+        refine["coherence"] += 0.03
+
+    contradiction = delta.get("contradiction")
+    if contradiction:
+        entry = f"contradiction: {contradiction}"[:THOUGHT_FIELD_MAXLEN]
+        if (
+            len(thought_state["open"]) < THOUGHT_MAX_OPEN
+            and not _is_near_duplicate_thought(entry, thought_state["open"])
+        ):
+            thought_state["open"].append(entry)
+            refine["risk"]       += 0.2
+            refine["coherence"]  -= 0.1
+            refine["confidence"] -= 0.1
+
+    for key in metrics:
+        dv = (delta.get("metric_delta") or {}).get(key, 0.0)
+        metrics[key] = round(_clamp01(metrics[key] + dv + refine[key]), 4)
     if len(thought_state["trace"]) < THOUGHT_MAX_TRACE:
         thought_state["trace"].append(_compact_delta(delta))
 
@@ -1826,6 +2062,80 @@ def compact_thought_state(thought_state: dict) -> dict:
             for d in (thought_state.get("trace") or [])[:THOUGHT_MAX_TRACE]
         ],
     }
+
+
+# ── v40: Thought-Carrying Octave, шаг 1 ──────────────────────────────────────
+# Между Дэвами канонически передаётся ThoughtState (компактной сводкой в
+# локальный контекст), артефактный поток пока сохраняется как есть.
+THOUGHT_SUMMARY_MAX_CHARS    = 900
+THOUGHT_SUMMARY_MAX_ITEMS    = 3
+THOUGHT_SUMMARY_DELTA_MAXLEN = 160
+
+_THOUGHT_CONTINUITY_LINE = (
+    "Ты продолжаешь одну и ту же мысль. Не начинай новую задачу. "
+    "Преобразуй текущий ThoughtState согласно роли Дэвы."
+)
+
+
+def _compact_thought_state_summary(
+    thought_state: dict,
+    max_chars: int = THOUGHT_SUMMARY_MAX_CHARS,
+) -> str:
+    """Компактная сводка ThoughtState для инъекции в контекст.
+
+    Без artifact-тел, без полного trace (только последняя дельта),
+    claims/open/constraints — по THOUGHT_SUMMARY_MAX_ITEMS последних,
+    жёсткое усечение до max_chars. Пусто, если слой выключен/state нет.
+    """
+    if not THOUGHT_STATE_ENABLED or not isinstance(thought_state, dict):
+        return ""
+    seed    = thought_state.get("seed") or {}
+    metrics = thought_state.get("metrics") or {}
+    lines = [
+        "[THOUGHT_STATE]",
+        f"intent={seed.get('intent', '?')} mode={seed.get('mode', '?')}",
+        f"question={str(seed.get('question', ''))[:120]}",
+        "metrics: " + " ".join(
+            f"{k}={float(metrics.get(k, 0.0)):.2f}"
+            for k in ("grounding", "coherence", "risk", "confidence", "novelty")
+        ),
+    ]
+    for label in ("claims", "open", "constraints"):
+        items = (thought_state.get(label) or [])[-THOUGHT_SUMMARY_MAX_ITEMS:]
+        if items:
+            lines.append(f"{label}:")
+            lines.extend(f"- {str(i)[:THOUGHT_FIELD_MAXLEN]}" for i in items)
+    trace = thought_state.get("trace") or []
+    if trace:
+        last = trace[-1]
+        md = last.get("metric_delta") or {}
+        changes = " ".join(f"{k}{v:+.2f}" for k, v in md.items() if v)
+        lines.append("last_delta:")
+        lines.append(
+            (f"- {last.get('deva', '?')}: {changes or 'no-op'}, "
+             f"reason={last.get('reason', '')}")[:THOUGHT_SUMMARY_DELTA_MAXLEN]
+        )
+    lines.append("[/THOUGHT_STATE]")
+    summary = "\n".join(lines)
+    if len(summary) > max_chars:
+        closing = "\n[/THOUGHT_STATE]"
+        summary = summary[: max_chars - len(closing)] + closing
+    return summary
+
+
+def _enrich_deva_context_with_thought_state(
+    node_shared_ctx: str,
+    thought_state: dict,
+) -> str:
+    """Дописывает сводку ThoughtState в ЛОКАЛЬНЫЙ контекст Дэвы.
+
+    Не мутирует shared_memory/state — только возвращает новую строку.
+    No-op, если слой выключен или state отсутствует.
+    """
+    summary = _compact_thought_state_summary(thought_state)
+    if not summary:
+        return node_shared_ctx
+    return f"{node_shared_ctx}\n\n{summary}\n{_THOUGHT_CONTINUITY_LINE}"
 
 
 def _generate_deva_roles(raw_text: str, devas_by_center: dict, note_name: str) -> dict:
@@ -2629,6 +2939,15 @@ def conduct(raw_text: str) -> None:
         _node_lines_removed = _node_lines_before - len(node_shared_ctx.splitlines())
         if _node_lines_removed:
             _sys_log(f"ᚠ HOT dedupe removed {_node_lines_removed} repeated lines")
+        # ── v40: мысль проходит через Дэва — сводка ThoughtState в локальный
+        # контекст ПОСЛЕ всех фильтров (иначе status-фильтры срезали бы её).
+        if THOUGHT_STATE_ENABLED and _thought_state is not None:
+            try:
+                node_shared_ctx = _enrich_deva_context_with_thought_state(
+                    node_shared_ctx, _thought_state,
+                )
+            except Exception as _ts_ctx_err:
+                _sys_log(f"[THOUGHT] ctx inject failed: {_ts_ctx_err}")
         _ctx_for_deva = (
             ((_mapped_obs + "\n") if _mapped_obs else "")
             + node_shared_ctx
@@ -2795,6 +3114,8 @@ def conduct(raw_text: str) -> None:
                     diagnostic_authorized=bool(
                         _pre_janus.get("diagnostic_authorized", False)
                     ),
+                    pre_janus_frame=_pre_janus,
+                    thought_state=_thought_state,
                 )
                 apply_thought_delta(_thought_state, _td)
             except Exception as _td_err:
@@ -2947,6 +3268,21 @@ def conduct(raw_text: str) -> None:
         )
     else:
         _task_for_janus = raw_text
+
+    # ── v40: сводка ThoughtState для Януса — ПОСЛЕ фильтров all_artifacts,
+    # помечена как состояние мысли, НЕ как факты (не BASH_FACTS).
+    if THOUGHT_STATE_ENABLED and _thought_state is not None:
+        try:
+            _ts_summary = _compact_thought_state_summary(_thought_state)
+            if _ts_summary:
+                all_artifacts = (
+                    f"{all_artifacts}\n\n"
+                    "[ВНУТРЕННЕЕ СОСТОЯНИЕ МЫСЛИ — state, не свидетельство, "
+                    "не BASH_FACTS]\n"
+                    f"{_ts_summary}"
+                )
+        except Exception as _ts_sum_err:
+            _sys_log(f"[THOUGHT] summary for Janus failed: {_ts_sum_err}")
 
     try:
         synthesis, d_persona, s_shadow, retry_needed = janus_dyad(

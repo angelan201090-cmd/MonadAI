@@ -704,7 +704,9 @@ class TestThoughtState(unittest.TestCase):
             apply_thought_delta, compact_thought_state, THOUGHT_FIELD_MAXLEN,
         )
         ts = make_thought_state(make_thought_seed("задача " * 100, None))
-        big_artifact = "UNIQUEMARKER ошибка " * 300
+        # «секрет» вместо «ошибка»: v40.1 легитимно извлекает open-фрагменты
+        # по маркеру «ошибка»; тест проверяет утечку ТЕЛА, а не экстракцию.
+        big_artifact = "UNIQUEMARKER секрет " * 300
         delta = compute_thought_delta(
             deva="Budha", center="Head", artifact=big_artifact,
             rune="ᛁ", action="none",
@@ -884,6 +886,337 @@ class TestIntentTaxonomy(unittest.TestCase):
                 "почему возникла галлюцинация", "проверь порты", "кто ты?",
             ):
                 jc._pre_janus_frame(text)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v40: Thought-Carrying Octave — сводка ThoughtState между Дэвами
+# ─────────────────────────────────────────────────────────────────────────────
+class TestThoughtCarryingOctave(unittest.TestCase):
+
+    def _make_state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.2,
+        )
+
+    def test_summary_is_bounded(self):
+        """Сводка ≤ 900 символов даже при полных claims/open/constraints."""
+        from core.janus_conductor import (
+            _compact_thought_state_summary, THOUGHT_SUMMARY_MAX_CHARS,
+        )
+        ts = self._make_state()
+        for i in range(7):
+            ts["claims"].append(f"claim-{i} " + "x" * 150)
+            ts["open"].append(f"open-{i} " + "y" * 150)
+            ts["constraints"].append(f"constr-{i} " + "z" * 150)
+        summary = _compact_thought_state_summary(ts)
+        self.assertLessEqual(len(summary), THOUGHT_SUMMARY_MAX_CHARS)
+        self.assertTrue(summary.startswith("[THOUGHT_STATE]"))
+        self.assertTrue(summary.endswith("[/THOUGHT_STATE]"))
+
+    def test_summary_includes_intent_mode_metrics(self):
+        from core.janus_conductor import _compact_thought_state_summary
+        summary = _compact_thought_state_summary(self._make_state())
+        self.assertIn("intent=design mode=design", summary)
+        self.assertIn("question=спроектируй новую память", summary)
+        self.assertIn("grounding=0.20", summary)
+        self.assertIn("risk=0.00", summary)
+        self.assertIn("confidence=0.50", summary)
+
+    def test_summary_excludes_artifact_body(self):
+        """Artifact-тело не попадает в сводку — только детерминированная дельта."""
+        from core.janus_conductor import (
+            _compact_thought_state_summary,
+            compute_thought_delta, apply_thought_delta,
+        )
+        ts = self._make_state()
+        delta = compute_thought_delta(
+            deva="Shani", center="Head",
+            artifact="UNIQUEMARKER секретное тело артефакта " * 50,
+            rune="ᛁ", action="none",
+        )
+        apply_thought_delta(ts, delta)
+        summary = _compact_thought_state_summary(ts)
+        self.assertNotIn("UNIQUEMARKER", summary)
+        self.assertIn("last_delta:", summary)
+        self.assertIn("Shani", summary)
+
+    def test_summary_caps_items_to_three(self):
+        """Показываются только 3 ПОСЛЕДНИХ элемента каждого списка."""
+        from core.janus_conductor import _compact_thought_state_summary
+        ts = self._make_state()
+        for i in range(7):
+            ts["claims"].append(f"CLAIM_{i}")
+        summary = _compact_thought_state_summary(ts)
+        self.assertNotIn("CLAIM_0", summary)
+        self.assertNotIn("CLAIM_3", summary)
+        for i in (4, 5, 6):
+            self.assertIn(f"CLAIM_{i}", summary)
+
+    def test_enrich_appends_without_mutating_input(self):
+        from core.janus_conductor import (
+            _enrich_deva_context_with_thought_state, _THOUGHT_CONTINUITY_LINE,
+        )
+        ts = self._make_state()
+        trace_before = list(ts["trace"])
+        ctx = "ИСХОДНЫЙ КОНТЕКСТ ДЭВЫ"
+        enriched = _enrich_deva_context_with_thought_state(ctx, ts)
+        self.assertTrue(enriched.startswith("ИСХОДНЫЙ КОНТЕКСТ ДЭВЫ"))
+        self.assertIn("[THOUGHT_STATE]", enriched)
+        self.assertIn(_THOUGHT_CONTINUITY_LINE, enriched)
+        self.assertEqual(ts["trace"], trace_before)
+        self.assertEqual(ctx, "ИСХОДНЫЙ КОНТЕКСТ ДЭВЫ")
+
+    def test_next_deva_sees_updated_state(self):
+        """После дельты следующий Дэва видит обновлённые metrics/open/constraints."""
+        from core.janus_conductor import (
+            _enrich_deva_context_with_thought_state,
+            compute_thought_delta, apply_thought_delta,
+        )
+        ts = self._make_state()
+        ctx_before = _enrich_deva_context_with_thought_state("CTX", ts)
+        self.assertIn("risk=0.00", ctx_before)
+        self.assertNotIn("outward action blocked", ctx_before)
+        delta = compute_thought_delta(
+            deva="Mangala", center="Body",
+            artifact="Запусти ss -tlnp и проверь порты, RAM",
+            rune="ᛃ", action="none",
+            mode="design", diagnostic_authorized=False,
+        )
+        apply_thought_delta(ts, delta)
+        ctx_after = _enrich_deva_context_with_thought_state("CTX", ts)
+        # v40.1: 0.20 (outward) + 0.05 (constraint добавлен) = 0.25
+        self.assertIn("risk=0.25", ctx_after)
+        self.assertIn("outward action blocked by introspection", ctx_after)
+        self.assertIn("Mangala", ctx_after)
+
+    def test_flag_off_no_injection(self):
+        """THOUGHT_STATE_ENABLED=False → пустая сводка, контекст не меняется."""
+        import core.janus_conductor as jc
+        ts = self._make_state()
+        with patch.object(jc, "THOUGHT_STATE_ENABLED", False):
+            self.assertEqual(jc._compact_thought_state_summary(ts), "")
+            self.assertEqual(
+                jc._enrich_deva_context_with_thought_state("CTX", ts), "CTX",
+            )
+        # И на отсутствующем state — no-op
+        self.assertEqual(jc._compact_thought_state_summary(None), "")
+        self.assertEqual(
+            jc._enrich_deva_context_with_thought_state("CTX", None), "CTX",
+        )
+
+    def test_octave_carries_thought_no_extra_calls(self):
+        """Проводка в conduct: инъекция есть, LLM-вызовов нет, FOHAT_CHAIN цел."""
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_enrich_deva_context_with_thought_state", src)
+        self.assertIn("_compact_thought_state_summary", src)
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._make_state()
+            jc._enrich_deva_context_with_thought_state("CTX", ts)
+            jc._compact_thought_state_summary(ts)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v40.1: семантическая экстракция — ThoughtState накапливает смысл
+# ─────────────────────────────────────────────────────────────────────────────
+class TestSemanticExtraction(unittest.TestCase):
+
+    _IDENTITY_CLAIM = (
+        "MonadaAI — локальная многоузловая ИИ-система в архитектуре "
+        "Monada-Hardcore."
+    )
+
+    def _state(self, text="кто ты?"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def test_identity_claim_extracted(self):
+        from core.janus_conductor import _extract_semantic_claim, _pre_janus_frame
+        claim = _extract_semantic_claim(
+            self._IDENTITY_CLAIM, _pre_janus_frame("кто ты?"), self._state(),
+        )
+        self.assertEqual(claim, self._IDENTITY_CLAIM)
+
+    def test_bash_command_not_extracted_as_claim(self):
+        from core.janus_conductor import _extract_semantic_claim, _pre_janus_frame
+        for artifact in (
+            "Запусти ls -la /home/angelan и free -h для системы.",
+            "```bash\nss -tlnp\n```",
+            "Система: выполните скрипт check.sh в архитектуре.",
+        ):
+            self.assertIsNone(
+                _extract_semantic_claim(
+                    artifact, _pre_janus_frame("кто ты?"), self._state(),
+                ),
+                artifact,
+            )
+
+    def test_status_claim_requires_diagnostic_authorization(self):
+        from core.janus_conductor import _extract_semantic_claim, _pre_janus_frame
+        artifact = "Порты системы 8081, 8082 прослушиваются стабильно."
+        self.assertIsNone(
+            _extract_semantic_claim(
+                artifact, _pre_janus_frame("кто ты?"), self._state(),
+            )
+        )
+        self.assertTrue(
+            _extract_semantic_claim(
+                artifact, _pre_janus_frame("проверь порты"), self._state(),
+            )
+        )
+
+    def test_pain_becomes_open_not_claim(self):
+        from core.janus_conductor import (
+            _extract_semantic_claim, _extract_open_question_or_issue,
+            _pre_janus_frame,
+        )
+        artifact = "БОЛЬ: Недостаточно данных для определения причины галлюцинации."
+        self.assertIsNone(
+            _extract_semantic_claim(
+                artifact, _pre_janus_frame("почему возникла галлюцинация"),
+                self._state(),
+            )
+        )
+        self.assertEqual(
+            _extract_open_question_or_issue(artifact),
+            "Недостаточно данных для определения причины галлюцинации.",
+        )
+
+    def test_reflective_bash_proposal_becomes_constraint(self):
+        from core.janus_conductor import _extract_constraint, _pre_janus_frame
+        constraint = _extract_constraint(
+            "Предлагаю запустить скрипт /home/angelan/check.sh",
+            _pre_janus_frame("спроектируй новую память"),
+        )
+        self.assertEqual(constraint, "outward action blocked by design")
+
+    def test_contradiction_denial_plus_executable(self):
+        from core.janus_conductor import _extract_contradiction
+        self.assertEqual(
+            _extract_contradiction(
+                "Я ничего не исполняю, но вот скрипт /home/angelan/run.sh",
+                {},
+            ),
+            "artifact denies execution but proposes executable action",
+        )
+        self.assertEqual(
+            _extract_contradiction(
+                "Нет подтверждения состояния, но всё подтверждено и готово.",
+                {},
+            ),
+            "artifact mixes unsupported uncertainty with confirmation",
+        )
+        self.assertIsNone(_extract_contradiction("Просто текст мысли.", {}))
+
+    def test_duplicate_claims_not_added_twice(self):
+        from core.janus_conductor import (
+            compute_thought_delta, apply_thought_delta, _pre_janus_frame,
+        )
+        ts = self._state()
+        frame = _pre_janus_frame("кто ты?")
+        for _ in range(3):
+            delta = compute_thought_delta(
+                deva="Shani", center="Head", artifact=self._IDENTITY_CLAIM,
+                rune="ᛃ", action="none", mode="introspection",
+                diagnostic_authorized=False,
+                pre_janus_frame=frame, thought_state=ts,
+            )
+            apply_thought_delta(ts, delta)
+        self.assertEqual(len(ts["claims"]), 1)
+
+    def test_caps_hold_for_all_lists(self):
+        """claims/open/constraints не превышают 7 при потоке разных дельт."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        for i in range(10):
+            apply_thought_delta(ts, {
+                "deva": f"D{i}", "center": "Head", "rune": "ᛃ", "action": "none",
+                "claim": f"claim номер {i} о системе",
+                "open": f"открытый вопрос {i}",
+                "constraint": f"ограничение {i}",
+                "metric_delta": {},
+                "reason": "test",
+            })
+        self.assertEqual(len(ts["claims"]), 7)
+        self.assertEqual(len(ts["open"]), 7)
+        self.assertEqual(len(ts["constraints"]), 7)
+
+    def test_claim_addition_raises_confidence_and_coherence(self):
+        from core.janus_conductor import compute_thought_delta, apply_thought_delta
+        ts = self._state()
+        delta = compute_thought_delta(
+            deva="Budha", center="Head", artifact=self._IDENTITY_CLAIM,
+            rune="ᛃ", action="none", thought_state=ts,
+        )
+        self.assertEqual(delta["claim"], self._IDENTITY_CLAIM)
+        apply_thought_delta(ts, delta)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], 0.55)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.55)
+
+    def test_contradiction_raises_risk_lowers_confidence(self):
+        from core.janus_conductor import compute_thought_delta, apply_thought_delta
+        ts = self._state()
+        delta = compute_thought_delta(
+            deva="Rahu", center="Head",
+            artifact="Я ничего не исполняю, но вот bash скрипт запуска",
+            rune="ᛃ", action="none", thought_state=ts,
+        )
+        self.assertTrue(delta["contradiction"])
+        apply_thought_delta(ts, delta)
+        self.assertAlmostEqual(ts["metrics"]["risk"], 0.2)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], 0.4)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.4)
+        self.assertTrue(
+            any(o.startswith("contradiction:") for o in ts["open"])
+        )
+
+    def test_compact_state_still_excludes_artifact_bodies(self):
+        """Извлечённые элементы ≤160 симв.; тело артефакта не утекает."""
+        from core.janus_conductor import (
+            compute_thought_delta, apply_thought_delta, compact_thought_state,
+            THOUGHT_FIELD_MAXLEN,
+        )
+        ts = self._state()
+        long_tail = "BIGBODYMARKER без якорей и признаков " * 200
+        delta = compute_thought_delta(
+            deva="Shani", center="Head",
+            artifact=f"{self._IDENTITY_CLAIM} {long_tail}",
+            rune="ᛃ", action="none", thought_state=ts,
+        )
+        apply_thought_delta(ts, delta)
+        compact = compact_thought_state(ts)
+        dumped = json.dumps(compact, ensure_ascii=False)
+        self.assertNotIn("BIGBODYMARKER", dumped)
+        for c in compact["claims"]:
+            self.assertLessEqual(len(c), THOUGHT_FIELD_MAXLEN)
+
+    def test_extraction_no_llm_calls_chain_unchanged(self):
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._state()
+            frame = jc._pre_janus_frame("кто ты?")
+            jc._extract_semantic_claim(self._IDENTITY_CLAIM, frame, ts)
+            jc._extract_open_question_or_issue("БОЛЬ: ошибка такта.")
+            jc._extract_constraint("предлагаю bash", frame)
+            jc._extract_contradiction("текст", ts)
         http_post.assert_not_called()
         self.assertEqual(
             [deva for _, deva, _ in jc.FOHAT_CHAIN],
