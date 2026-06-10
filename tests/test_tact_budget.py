@@ -43,17 +43,39 @@ class TestTactBudget(unittest.TestCase):
             ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
         )
 
-    def test_dyad_uses_3_distinct_ports(self):
-        """Диада использует 3 разных порта: 8084, 8085, 8086."""
+    def test_dyad_persona_shadow_share_endpoint(self):
+        """ПЕРСОНА и ТЕНЬ делят один llama-server (8084, shared Gemma); Синтез отдельно (8086).
+
+        Экономия RAM: вместо трёх серверов 8084/8085/8086 поднимаем два эндпоинта.
+        Персона и Тень адресуются на один порт, Синтез — на отдельный.
+        """
         from core.janus_conductor import PERSONA_URL, SHADOW_URL, SYNTHESIS_URL
         ports = {
             int(u.split(":")[2].split("/")[0])
             for u in (PERSONA_URL, SHADOW_URL, SYNTHESIS_URL)
         }
-        self.assertEqual(ports, {8084, 8085, 8086},
-                         f"Ожидали порты 8084/8085/8086, получили {ports}")
-        # все три URL различны
-        self.assertEqual(len({PERSONA_URL, SHADOW_URL, SYNTHESIS_URL}), 3)
+        # 8085 больше не используется — Персона и Тень делят 8084
+        self.assertEqual(ports, {8084, 8086},
+                         f"Ожидали порты 8084 (Персона+Тень) и 8086 (Синтез), получили {ports}")
+        # Персона и Тень — один эндпоинт
+        self.assertEqual(PERSONA_URL, SHADOW_URL,
+                         "Персона и Тень должны делить один shared-Gemma эндпоинт")
+        # Синтез — отдельный эндпоинт
+        self.assertNotEqual(SYNTHESIS_URL, PERSONA_URL,
+                            "Синтез должен оставаться на отдельном порту 8086")
+        # различных эндпоинтов ровно 2
+        self.assertEqual(len({PERSONA_URL, SHADOW_URL, SYNTHESIS_URL}), 2)
+
+    def test_persona_and_shadow_both_called_logically(self):
+        """Несмотря на общий эндпоинт, Персона и Тень вызываются как две отдельные фазы."""
+        import inspect
+        from core.janus_conductor import janus_dyad
+        src = inspect.getsource(janus_dyad)
+        # обе фазы делают свой _http_post: Персона → PERSONA_URL, Тень → SHADOW_URL
+        self.assertIn("_http_post(PERSONA_URL", src,
+                      "Фаза Персоны должна делать отдельный вызов на PERSONA_URL")
+        self.assertIn("_http_post(SHADOW_URL", src,
+                      "Фаза Тени должна делать отдельный вызов на SHADOW_URL")
 
     def test_triada_plus_dyad_max_9_calls(self):
         """Совокупный бюджет: 6 (Триада/спираль) + 3 (Диада) = 9 вызовов."""

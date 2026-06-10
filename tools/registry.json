@@ -14,8 +14,8 @@
   {
     "name": "check_ports",
     "category": "observe",
-    "description": "Активность портов Монады (8081-8086, 13305)",
-    "command": "ss -tlnp | grep -E '808[1-6]|13305'"
+    "description": "Активность портов Монады (8081-8084, 8086, 13305; Персона+Тень делят 8084)",
+    "command": "ss -tlnp | grep -E '808[1-4]|8086|13305'"
   },
   {
     "name": "check_janus",

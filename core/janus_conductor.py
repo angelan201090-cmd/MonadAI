@@ -48,8 +48,8 @@ _BASE              = "http://127.0.0.1:{}/v1/chat/completions"
 UM_URL             = _BASE.format(8081)   # Llama-3.2-3B  — УМ
 SERDCE_URL         = _BASE.format(8082)   # Phi-3.5-mini  — СЕРДЦЕ
 TELO_URL           = _BASE.format(8083)   # Qwen2.5-Coder-7B-Instruct-heretic — ТЕЛО
-PERSONA_URL        = _BASE.format(8084)   # Hermes-3-3B   — ПЕРСОНА
-SHADOW_URL         = _BASE.format(8085)   # stablelm IQ4  — ТЕНЬ
+PERSONA_URL        = _BASE.format(8084)   # Gemma-4-E4B-Abliterated — ПЕРСОНА
+SHADOW_URL         = PERSONA_URL          # ТЕНЬ: shared Gemma на 8084 (общий llama-server с Персоной)
 SYNTHESIS_URL      = _BASE.format(8086)   # Luna-7B       — СИНТЕЗ (оркестратор)
 JANUS_URL          = SYNTHESIS_URL        # алиас: старый код → СИНТЕЗ
 

@@ -7,8 +7,7 @@
 #   8081 — УМ       : Phi-4-mini-instruct                  IQ4_NL  ctx=4096
 #   8082 — СЕРДЦЕ   : Gemma-3-4B-it-heretic               IQ4_NL  ctx=4096
 #   8083 — ТЕЛО     : Granite-4.0-H-Micro                 Q6_K_XL ctx=4096
-#   8084 — ПЕРСОНА  : Gemma-4-E4B-Abliterated             IQ4_XS  ctx=4096
-#   8085 — ТЕНЬ     : Gemma-4-E4B-Abliterated             IQ4_XS  ctx=4096
+#   8084 — ПЕРСОНА+ТЕНЬ : Gemma-4-E4B-Abliterated         IQ4_XS  ctx=4096 (shared)
 #   8086 — СИНТЕЗ   : SmolLM3-3B                          IQ4_NL  ctx=8192
 #   13305— ПОДСОЗНАНИЕ: nomic-embed-text-v1-GGUF (lemond/llamacpp)
 # =====================================================================
@@ -24,8 +23,8 @@ DANCEFLOOR="/mnt/dancefloor"
 MODEL_UM="$MODELS_DIR/microsoft_Phi-4-mini-instruct-IQ4_NL.gguf"
 MODEL_SERDCE="$MODELS_DIR/gemma-3-4b-it-heretic-iq4_nl-imat.gguf"
 MODEL_TELO="$MODELS_DIR/granite-4.0-h-micro-UD-Q6_K_XL.gguf"
+# ПЕРСОНА и ТЕНЬ делят один llama-server на 8084 (shared Gemma) — экономия RAM
 MODEL_PERSONA="$MODELS_DIR/Gemma-4-E4B-Abliterated.IQ4_XS.gguf"
-MODEL_TEN="$MODELS_DIR/Gemma-4-E4B-Abliterated.IQ4_XS.gguf"
 MODEL_SINTEZ="$MODELS_DIR/SmolLM3-3B-IQ4_NL.gguf"
 
 echo "[ᛉ] Аннигиляция старых процессов..."
@@ -38,14 +37,14 @@ mkdir -p "$LOG_DIR"
 
 # ── Проверка моделей ──────────────────────────────────────────────────────────
 _MISSING=0
-for MODEL_PATH in "$MODEL_UM" "$MODEL_SERDCE" "$MODEL_TELO" "$MODEL_PERSONA" "$MODEL_TEN" "$MODEL_SINTEZ"; do
+for MODEL_PATH in "$MODEL_UM" "$MODEL_SERDCE" "$MODEL_TELO" "$MODEL_PERSONA" "$MODEL_SINTEZ"; do
     if [ ! -f "$MODEL_PATH" ]; then
         echo "[WARN] Модель не найдена: $MODEL_PATH — узел будет пропущен"
         _MISSING=$((_MISSING + 1))
     fi
 done
 if [ "$_MISSING" -eq 0 ]; then
-    echo "[OK] Все 6 модельных весов найдены."
+    echo "[OK] Все 5 модельных весов найдены (Персона+Тень делят Gemma)."
 else
     echo "[WARN] Пропущено моделей: $_MISSING — запуск продолжается для доступных узлов."
 fi
@@ -184,15 +183,12 @@ else
 fi
 
 # ── Запуск Януса ─────────────────────────────────────────────────────────────
+# ПЕРСОНА и ТЕНЬ обслуживаются ОДНИМ llama-server на 8084 (shared Gemma).
+# Отдельный сервер 8085 не поднимается — SHADOW_URL в janus_conductor.py указывает на 8084.
 if [ -f "$MODEL_PERSONA" ]; then
     start_server "PERSONA" 8084 "$MODEL_PERSONA" 4096
 else
-    echo "[SKIP] 8084 ПЕРСОНА — файл не найден: $MODEL_PERSONA"
-fi
-if [ -f "$MODEL_TEN" ]; then
-    start_server "TEN" 8085 "$MODEL_TEN" 4096
-else
-    echo "[SKIP] 8085 ТЕНЬ    — файл не найден: $MODEL_TEN"
+    echo "[SKIP] 8084 ПЕРСОНА+ТЕНЬ — файл не найден: $MODEL_PERSONA"
 fi
 if [ -f "$MODEL_SINTEZ" ]; then
     start_server "SINTEZ" 8086 "$MODEL_SINTEZ" 8192
@@ -215,7 +211,7 @@ echo " -> [OK] inbox_watcher pid=$!"
 echo ""
 echo "[ᚹ] ГЕПТАРХИЯ АКТИВНА"
 echo "    УМ      :8081  СЕРДЦЕ   :8082  ТЕЛО    :8083"
-echo "    ПЕРСОНА :8084  ТЕНЬ     :8085  СИНТЕЗ  :8086"
+echo "    PERSONA+SHADOW :8084 shared Gemma   СИНТЕЗ  :8086"
 echo "    ПОДСОЗНАНИЕ :13305 (lemond/nomic-embed)"
 echo "    ПРИСУТСТВИЕ :inbox_watcher (Proton Bridge)"
 echo ""
