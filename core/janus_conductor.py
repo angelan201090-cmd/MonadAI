@@ -1244,8 +1244,15 @@ def _filter_stale_hot_memory(shared_ctx: str, bash_facts: str) -> str:
         "порты мертвы",
         "порты не отвечают",
         "порт не отвечает",
+        "8083 inactive",
+        "8083 неактивен",
+        "порт 8083 неактивен",
     )
-    ram_stale_markers = ("ram 87%", "ram: 87%", "87%")
+    ram_stale_markers = (
+        "ram 87%", "ram: 87%", "87%",
+        "память 91%", "память 95%",
+        "ram 91%", "ram 95%",
+    )
 
     kept_lines = []
     for line in shared_ctx.splitlines():
