@@ -380,9 +380,51 @@ def _should_force_pralaya(shared_ctx: str) -> tuple[bool, str]:
     return bool(reasons), ", ".join(reasons)
 
 
+def _warm_semantic_meta(old_ctx: str) -> dict:
+    """Детерминированная семантика WARM-записи из текста выгружаемого контекста.
+
+    Без LLM: только подсчёт текстовых маркеров. pain/recovery/candidate/lesson.
+    """
+    low = old_ctx.lower()
+
+    _pain_hit   = any(m in old_ctx for m in ("БОЛЬ", "PAIN", "returncode"))
+    _veto_hit   = "VETO" in old_ctx
+    _kill_hit   = ("kill-switch" in low) or ("kill_switch" in low) or ("⊘" in old_ctx)
+    _halluc_hit = "filtered by bash_facts" in low
+
+    pain_score = int(_pain_hit) + int(_veto_hit) + int(_kill_hit) + int(_halluc_hit)
+
+    _bash_ok    = ("--- успех ---" in low) or ("bash выполнен" in low) \
+                  or ("bash подтвердил" in low) or ("bash_facts" in low)
+    _ground_up  = "grounding recovered" in low
+    _repair_ok  = "repair" in low
+    _stale_filt = "stale hot memory filtered" in low
+
+    recovery_score = int(_bash_ok) + int(_ground_up) + int(_repair_ok) + int(_stale_filt)
+
+    candidate_for_crystal = (pain_score + recovery_score) >= 3
+
+    if _bash_ok:
+        lesson = "bash overrides model claim"
+    elif _repair_ok and _ground_up:
+        lesson = "repair tact restored grounding"
+    elif _stale_filt or _halluc_hit:
+        lesson = "stale memory was filtered"
+    else:
+        lesson = "context compacted successfully"
+
+    return {
+        "pain_score":            pain_score,
+        "recovery_score":        recovery_score,
+        "candidate_for_crystal": candidate_for_crystal,
+        "lesson":                lesson,
+    }
+
+
 def _compact_shared_ctx_for_tact(
     shared_ctx: str,
     max_chars: int = 6000,
+    state: dict | None = None,
 ) -> tuple[str, str]:
     """Детерминированно переносит старую часть контекста из HOT в WARM."""
     forced, reason = _should_force_pralaya(shared_ctx)
@@ -392,6 +434,11 @@ def _compact_shared_ctx_for_tact(
 
     old_ctx = shared_ctx[:-keep_chars] if len(shared_ctx) > keep_chars else ""
     ram_available_gib = _ram_available_gib()
+
+    state = state or {}
+    _dm = state.get("diagnostic_metrics", {}) if isinstance(state, dict) else {}
+    semantic = _warm_semantic_meta(old_ctx)
+
     warm_record = json.dumps({
         "ts": datetime.datetime.now(datetime.UTC).isoformat(),
         "type": "forced_pralaya" if forced else "context_compaction",
@@ -401,6 +448,15 @@ def _compact_shared_ctx_for_tact(
         "chars_original": len(old_ctx),
         "excerpt_head": old_ctx[:800],
         "excerpt_tail": old_ctx[-800:],
+        # ── Семантические поля (детерминированно, без LLM) ──
+        "cycle":      state.get("cycle", 0),
+        "grounding":  round(float(state.get("grounding_score", 0.0)), 3),
+        "note":       state.get("current_note", 0),
+        "sigma":      round(float(_dm.get("sigma_last", 0.0)), 3),
+        "pain_score":            semantic["pain_score"],
+        "recovery_score":        semantic["recovery_score"],
+        "candidate_for_crystal": semantic["candidate_for_crystal"],
+        "lesson":                semantic["lesson"],
     }, ensure_ascii=False)
     return shared_ctx[-keep_chars:], warm_record
 
@@ -1725,7 +1781,7 @@ def conduct(raw_text: str) -> None:
     # ── Защитная Пралайя памяти перед первым LLM-вызовом ──────────────────────
     _force_pralaya, _pralaya_reason = _should_force_pralaya(shared_ctx)
     if _force_pralaya:
-        shared_ctx, warm_record = _compact_shared_ctx_for_tact(shared_ctx)
+        shared_ctx, warm_record = _compact_shared_ctx_for_tact(shared_ctx, state=state)
         if warm_record:
             try:
                 with open(MIDTERM_MEMORY_FILE, "a", encoding="utf-8") as _midterm:
