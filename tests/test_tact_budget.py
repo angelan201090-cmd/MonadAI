@@ -767,5 +767,129 @@ class TestThoughtState(unittest.TestCase):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# v39.1: таксономия намерений PRE-JANUS — conceptual/design/forensic
+# ─────────────────────────────────────────────────────────────────────────────
+class TestIntentTaxonomy(unittest.TestCase):
+
+    _BODY_FORBIDDEN = (
+        "bash", "порт", "port", "ram", "скрипт", "script",
+        "free -h", "ss -tlnp", "shell.py", "systemctl", "netstat",
+    )
+
+    def test_conceptual_question_not_diagnostic(self):
+        """«что такое память?» → conceptual, без диагностических полномочий."""
+        from core.janus_conductor import _pre_janus_frame
+        frame = _pre_janus_frame("что такое память?")
+        self.assertEqual(frame["intent"], "conceptual")
+        self.assertEqual(frame["mode"], "conceptual")
+        self.assertFalse(frame["diagnostic_authorized"])
+        self.assertFalse(frame["action_authorized"])
+        self.assertFalse(frame["bash_authorized"])
+
+    def test_design_question_not_diagnostic(self):
+        """«спроектируй новую память» → design, без диагностических полномочий."""
+        from core.janus_conductor import _pre_janus_frame
+        frame = _pre_janus_frame("спроектируй новую память")
+        self.assertEqual(frame["intent"], "design")
+        self.assertEqual(frame["mode"], "design")
+        self.assertFalse(frame["diagnostic_authorized"])
+        self.assertFalse(frame["bash_authorized"])
+
+    def test_forensic_question_routed(self):
+        """«почему возникла галлюцинация» → forensic, без полномочий."""
+        from core.janus_conductor import _pre_janus_frame
+        frame = _pre_janus_frame("почему возникла галлюцинация")
+        self.assertEqual(frame["intent"], "forensic")
+        self.assertEqual(frame["mode"], "forensic")
+        self.assertFalse(frame["diagnostic_authorized"])
+        self.assertFalse(frame["action_authorized"])
+        self.assertFalse(frame["bash_authorized"])
+
+    def test_explicit_diagnostic_still_authorized(self):
+        """«проверь порты» → diagnostic, mode='diagnostic', полномочия выданы."""
+        from core.janus_conductor import _pre_janus_frame
+        frame = _pre_janus_frame("проверь порты")
+        self.assertEqual(frame["intent"], "diagnostic")
+        self.assertEqual(frame["mode"], "diagnostic")
+        self.assertTrue(frame["diagnostic_authorized"])
+        self.assertTrue(frame["bash_authorized"])
+
+    def test_memory_word_alone_not_diagnostic(self):
+        """Слово «память» само по себе НЕ даёт диагностических полномочий."""
+        from core.janus_conductor import _pre_janus_frame
+        for text in ("память", "память монады", "новая память для системы"):
+            frame = _pre_janus_frame(text)
+            self.assertNotEqual(frame["intent"], "diagnostic", text)
+            self.assertFalse(frame["diagnostic_authorized"], text)
+            self.assertFalse(frame["bash_authorized"], text)
+
+    def test_taxonomy_precedence(self):
+        """forensic > identity; явный diagnostic > design/conceptual."""
+        from core.janus_conductor import _pre_janus_frame
+        self.assertEqual(
+            _pre_janus_frame("кто ты и почему ошибка?")["intent"], "forensic",
+        )
+        self.assertEqual(
+            _pre_janus_frame("объясни статус портов")["intent"], "diagnostic",
+        )
+        self.assertEqual(
+            _pre_janus_frame("спроектируй и проверь порты")["intent"], "diagnostic",
+        )
+
+    def test_reflective_body_micro_tasks_have_no_system_markers(self):
+        """Body-микрозадачи conceptual/design/forensic — без bash/портов/RAM/скриптов."""
+        from core.janus_conductor import _pre_janus_frame
+        for text in (
+            "что такое память?",
+            "спроектируй новую память",
+            "почему возникла галлюцинация",
+        ):
+            frame = _pre_janus_frame(text)
+            body = frame["micro_tasks"]["Body"].lower()
+            self.assertIn("action='none'", body)
+            for marker in self._BODY_FORBIDDEN:
+                self.assertNotIn(marker, body, f"{text!r} → Body содержит {marker!r}")
+
+    def test_non_diagnostic_final_filter_strips_system_proposals(self):
+        """Финальный фильтр новых режимов режет shell.py/systemctl/диагностику."""
+        from core.janus_conductor import (
+            _finalize_synthesis_for_mode, _pre_janus_frame,
+            _strip_system_action_proposals,
+        )
+        dirty = (
+            "Память — это эволюция смысла: Text → Glyph → Lesson → Archetype.\n\n"
+            "Запустить shell.py и systemctl status, проверь порты.\n\n"
+            "Посмотри netstat, cat /etc/passwd и /etc/inetd.conf, ls /home/ и /mnt/."
+        )
+        result = _finalize_synthesis_for_mode(
+            dirty, "Persona", "", _pre_janus_frame("что такое память?"),
+        )
+        self.assertIn("Память — это эволюция смысла", result)
+        for forbidden in (
+            "shell.py", "systemctl", "netstat", "проверь порты",
+            "Запустить", "/home/", "/mnt/", "/etc/passwd", "/etc/inetd.conf",
+        ):
+            self.assertNotIn(forbidden, result)
+        # Фильтр не должен резать чистый концептуальный текст
+        clean = "Память — самоподобная структура уроков и архетипов."
+        self.assertEqual(_strip_system_action_proposals(clean), clean)
+
+    def test_taxonomy_makes_no_llm_calls_and_chain_unchanged(self):
+        """Маршрутизация детерминирована (бюджет Януса не растёт); FOHAT_CHAIN цел."""
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            for text in (
+                "что такое память?", "спроектируй новую память",
+                "почему возникла галлюцинация", "проверь порты", "кто ты?",
+            ):
+                jc._pre_janus_frame(text)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1016,15 +1016,33 @@ _OUTWARD_ACTION_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+# v39.1: узкий фильтр системных действий для conceptual/design/forensic.
+# В отличие от _OUTWARD_ACTION_MARKERS не режет «файлы/пути/проверить» и
+# слово «память» — иначе ответ на «что такое память?» был бы выпотрошен.
+_SYSTEM_ACTION_MARKERS = re.compile(
+    r"\bports?\b|порт|\bram\b|free\s+-h|ss\s+-tlnp|\bbash\b"
+    r"|скрипт|script|shell\.py|systemctl|netstat"
+    r"|запустить|/home/|/mnt/|/etc/passwd|/etc/inetd\.conf",
+    re.IGNORECASE,
+)
 
-def _strip_outward_action_proposals(text: str, replacement: str = "") -> str:
+# Режимы, в которых Монада размышляет, а не действует: любые внешние
+# действия Тела блокируются, если пользователь явно не запросил диагностику.
+_REFLECTIVE_MODES = ("introspection", "conceptual", "design", "forensic")
+
+
+def _strip_paragraphs_matching(
+    pattern: re.Pattern,
+    text: str,
+    replacement: str = "",
+) -> str:
     kept = []
     replaced = False
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
-        if _OUTWARD_ACTION_MARKERS.search(paragraph):
+        if pattern.search(paragraph):
             if replacement and not replaced:
                 kept.append(replacement)
                 replaced = True
@@ -1033,17 +1051,31 @@ def _strip_outward_action_proposals(text: str, replacement: str = "") -> str:
     return "\n\n".join(kept)
 
 
+def _strip_outward_action_proposals(text: str, replacement: str = "") -> str:
+    return _strip_paragraphs_matching(_OUTWARD_ACTION_MARKERS, text, replacement)
+
+
+def _strip_system_action_proposals(text: str, replacement: str = "") -> str:
+    return _strip_paragraphs_matching(_SYSTEM_ACTION_MARKERS, text, replacement)
+
+
 def _finalize_synthesis_for_mode(
     synthesis: str,
     persona_text: str,
     bash_facts: str,
     pre_janus: dict,
 ) -> str:
-    if pre_janus.get("mode") == "introspection":
+    mode = pre_janus.get("mode") if isinstance(pre_janus, dict) else None
+    if mode == "introspection":
         filtered = _strip_outward_action_proposals(synthesis)
         if filtered:
             return filtered
         return _strip_outward_action_proposals(persona_text)
+    if mode in ("conceptual", "design", "forensic"):
+        filtered = _strip_system_action_proposals(synthesis)
+        if filtered:
+            return filtered
+        return _strip_system_action_proposals(persona_text)
     return _block_unverified_system_claims(synthesis, bash_facts, pre_janus)
 
 
@@ -1358,13 +1390,60 @@ def _decompose_task(raw_text: str, ready_centers: list, brief_ctx: str) -> dict:
     return {"plan": plan, "subtasks": subtasks}
 
 
+# v39.1: таксономия намерений PRE-JANUS.
+# Приоритет: forensic > identity > явный diagnostic > design > conceptual > default.
+# Слово «память» само по себе НЕ запускает диагностику — только явные
+# глаголы системной проверки. Все режимы кроме diagnostic не дают bash.
+_FORENSIC_MARKERS = (
+    "почему возникла галлюцинация", "почему была галлюцинация",
+    "причина галлюцинации", "разбор галлюцинации",
+    "почему сломалось", "почему ошибка",
+)
+_IDENTITY_MARKERS = ("кто ты", "что ты", "who are you", "what are you")
+_DIAGNOSTIC_MARKERS = (
+    "проверь порты", "проверить порты", "проверь ram",
+    "проверь память системы", "free -h", "ss -tlnp",
+    "диагностика системы", "статус портов",
+)
+_DESIGN_MARKERS = (
+    "спроектируй", "разработай", "архитектура", "дизайн",
+    "механика", "как реализовать",
+)
+_CONCEPTUAL_MARKERS = (
+    "что такое", "объясни", "расскажи", "почему", "зачем", "как работает",
+)
+
+
 def _pre_janus_frame(raw_text: str) -> dict:
     lowered = raw_text.lower()
-    identity_markers = ("кто ты", "что ты", "who are you", "what are you")
-    diagnostic_markers = (
-        "проверь порт", "порты", "ram", "память",
-        "free -h", "ss -tlnp", "диагност",
-    )
+    identity_markers = _IDENTITY_MARKERS
+    diagnostic_markers = _DIAGNOSTIC_MARKERS
+
+    if any(marker in lowered for marker in _FORENSIC_MARKERS):
+        return {
+            "intent": "forensic",
+            "mode": "forensic",
+            "diagnostic_authorized": False,
+            "action_authorized": False,
+            "bash_authorized": False,
+            "archetype": "Forensics",
+            "micro_tasks": {
+                "Head": (
+                    "Определи вероятный когнитивный сбой по trace и контексту "
+                    "(ThoughtState: open, risk, grounding): "
+                    f"{raw_text[:160]}. Только анализ, ничего не исполняй."
+                ),
+                "Heart": (
+                    "Назови риск и эмоциональный маркер этого сбоя "
+                    f"(БОЛЬ/VETO/стазис): {raw_text[:160]}."
+                ),
+                "Body": (
+                    "action='none'. Ничего не исполняй и не предлагай команд. "
+                    "Опиши, какие свидетельства потребовались бы для проверки "
+                    "причины сбоя — словами, без инструкций к запуску."
+                ),
+            },
+        }
 
     if any(marker in lowered for marker in identity_markers):
         identity_anchor = (
@@ -1403,6 +1482,7 @@ def _pre_janus_frame(raw_text: str) -> dict:
     if any(marker in lowered for marker in diagnostic_markers):
         return {
             "intent": "diagnostic",
+            "mode": "diagnostic",
             "diagnostic_authorized": True,
             "action_authorized": True,
             "bash_authorized": True,
@@ -1417,8 +1497,58 @@ def _pre_janus_frame(raw_text: str) -> dict:
             },
         }
 
+    if any(marker in lowered for marker in _DESIGN_MARKERS):
+        return {
+            "intent": "design",
+            "mode": "design",
+            "diagnostic_authorized": False,
+            "action_authorized": False,
+            "bash_authorized": False,
+            "archetype": "Design",
+            "micro_tasks": {
+                "Head": (
+                    "Предложи архитектуру: структура, потоки данных, инварианты. "
+                    f"Задача: {raw_text[:160]}. Только проект, ничего не исполняй."
+                ),
+                "Heart": (
+                    "Оцени элегантность и риски предложенной архитектуры: "
+                    f"{raw_text[:160]}."
+                ),
+                "Body": (
+                    "action='none'. Никаких системных команд и проверок "
+                    "инфраструктуры. Опиши ограничения реализации абстрактно: "
+                    "данные, границы, инварианты."
+                ),
+            },
+        }
+
+    if any(marker in lowered for marker in _CONCEPTUAL_MARKERS):
+        return {
+            "intent": "conceptual",
+            "mode": "conceptual",
+            "diagnostic_authorized": False,
+            "action_authorized": False,
+            "bash_authorized": False,
+            "archetype": "Concept",
+            "micro_tasks": {
+                "Head": (
+                    f"Дай точное определение понятия: {raw_text[:160]}. "
+                    "Это вопрос о смысле, не о состоянии системы."
+                ),
+                "Heart": (
+                    f"Раскрой смысл и ценность понятия: {raw_text[:160]}."
+                ),
+                "Body": (
+                    "action='none'. Никаких системных команд и проверок "
+                    "инфраструктуры. Дай одну практическую аналогию из жизни "
+                    f"для: {raw_text[:160]}."
+                ),
+            },
+        }
+
     return {
         "intent": "default",
+        "mode": "default",
         "diagnostic_authorized": False,
         "action_authorized": False,
         "bash_authorized": False,
@@ -2470,8 +2600,14 @@ def conduct(raw_text: str) -> None:
         _mapped_obs = map_obs_for_center(_c, _raw_obs)
         node_shared_ctx = shared_ctx
         if not _pre_janus_allows_bash(_pre_janus):
-            node_shared_ctx = _strip_system_status_claims(node_shared_ctx)
-            _mapped_obs = _strip_system_status_claims(_mapped_obs)
+            # conceptual/design/forensic: узкий фильтр — артефакты Дэвов этого
+            # такта легитимно говорят о «памяти» как о понятии, не о статусе.
+            if _pre_janus.get("mode") in ("conceptual", "design", "forensic"):
+                node_shared_ctx = _strip_system_action_proposals(node_shared_ctx)
+                _mapped_obs = _strip_system_action_proposals(_mapped_obs)
+            else:
+                node_shared_ctx = _strip_system_status_claims(node_shared_ctx)
+                _mapped_obs = _strip_system_status_claims(_mapped_obs)
         _current_bash_facts = "\n".join(_bash_fact_parts)
         if _current_bash_facts:
             node_shared_ctx = _filter_stale_hot_memory(
@@ -2583,14 +2719,16 @@ def conduct(raw_text: str) -> None:
         if (
             center in EXEC_CENTERS
             and artifact_rune != "ᛁ"
-            and _pre_janus.get("mode") == "introspection"
+            and _pre_janus.get("mode") in _REFLECTIVE_MODES
         ):
             if (
                 "```bash" in artifact
                 or _is_safe_body_raw_bash(artifact)
                 or not _pre_janus_allows_action(_pre_janus)
             ):
-                _sys_log("ᛉ introspection mode blocked outward action")
+                _sys_log(
+                    f"ᛉ {_pre_janus.get('mode')} mode blocked outward action"
+                )
         elif (
             center in EXEC_CENTERS
             and artifact_rune != "ᛁ"
@@ -2774,8 +2912,14 @@ def conduct(raw_text: str) -> None:
         not _pre_janus_allows_bash(_pre_janus)
         and not _bash_facts_verify_system_status(bash_facts)
     ):
-        shared_ctx = _strip_system_status_claims(shared_ctx)
-        all_artifacts = _strip_system_status_claims(all_artifacts)
+        # conceptual/design/forensic: узкий фильтр действий — слово «память»
+        # в концептуальном ответе легитимно, статус-фильтр его бы вырезал.
+        if _pre_janus.get("mode") in ("conceptual", "design", "forensic"):
+            shared_ctx = _strip_system_action_proposals(shared_ctx)
+            all_artifacts = _strip_system_action_proposals(all_artifacts)
+        else:
+            shared_ctx = _strip_system_status_claims(shared_ctx)
+            all_artifacts = _strip_system_status_claims(all_artifacts)
 
     _janus_lines_before = (
         len(shared_ctx.splitlines()) + len(all_artifacts.splitlines())
@@ -2813,6 +2957,8 @@ def conduct(raw_text: str) -> None:
         )
         if _pre_janus.get("mode") == "introspection":
             synthesis = _strip_outward_action_proposals(synthesis)
+        elif _pre_janus.get("mode") in ("conceptual", "design", "forensic"):
+            synthesis = _strip_system_action_proposals(synthesis)
         elif not _pre_janus_allows_bash(_pre_janus):
             synthesis = _strip_system_status_claims(
                 synthesis,
