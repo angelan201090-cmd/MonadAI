@@ -1236,6 +1236,28 @@ def _is_repair_diagnostic_task(raw_text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _filter_stale_hot_memory(shared_ctx: str, bash_facts: str) -> str:
+    port_facts_present = "LISTEN" in bash_facts or "llama-server" in bash_facts
+    ram_facts_present = any(marker in bash_facts for marker in ("Mem:", "RAM:", "Gi"))
+    port_stale_markers = (
+        "не отвечают",
+        "порты мертвы",
+        "порты не отвечают",
+        "порт не отвечает",
+    )
+    ram_stale_markers = ("ram 87%", "ram: 87%", "87%")
+
+    kept_lines = []
+    for line in shared_ctx.splitlines():
+        lowered = line.lower()
+        if port_facts_present and any(marker in lowered for marker in port_stale_markers):
+            continue
+        if ram_facts_present and any(marker in lowered for marker in ram_stale_markers):
+            continue
+        kept_lines.append(line)
+    return "\n".join(kept_lines)
+
+
 def _format_bash_fact(deva: str, result: str) -> str:
     if result.startswith("--- УСПЕХ"):
         return f"[{deva}]: {result}"
@@ -1790,12 +1812,27 @@ def conduct(raw_text: str) -> None:
 
         _subtask = subtasks.get(_c, raw_text)
         _mapped_obs = map_obs_for_center(_c, _raw_obs)
-        # Марковская мембрана: фильтруем входящие ощущения под центр Дэвы.
-        # Мастер-память (state["shared_memory"]) остаётся нетронутой — глобальное
-        # рабочее пространство хранит абсолютную истину без каких-либо изменений.
-        _filtered_memory = _blanket_filter(_d, state.get("shared_memory", []))
-        _filtered_ctx = "\n".join(str(r) for r in _filtered_memory)
-        _ctx_for_deva = ((_mapped_obs + "\n") if _mapped_obs else "") + _filtered_ctx
+        node_shared_ctx = shared_ctx
+        _current_bash_facts = "\n".join(_bash_fact_parts)
+        if _current_bash_facts:
+            node_shared_ctx = _filter_stale_hot_memory(
+                node_shared_ctx,
+                _current_bash_facts,
+            )
+        elif any(
+            marker in raw_text.lower()
+            for marker in ("ports", "memory", "ram", "порты", "порт", "память")
+        ):
+            node_shared_ctx = _filter_stale_hot_memory(
+                node_shared_ctx,
+                "LISTEN Mem:",
+            )
+        if node_shared_ctx != shared_ctx:
+            _sys_log("ᚲ stale HOT memory filtered before Deva")
+        _ctx_for_deva = (
+            ((_mapped_obs + "\n") if _mapped_obs else "")
+            + node_shared_ctx
+        )
         _ft = (
             f"{task_anchor}"
             f"[ПЛАН_ЯНУСА]: {manifest_plan}\n"
@@ -2010,6 +2047,15 @@ def conduct(raw_text: str) -> None:
             f"{assembly_parts}"
         )
         _sys_log(f"✅ Все {len(_at['centers'])} подзадачи выполнены → финальная сборка Янусом")
+
+    if bash_facts:
+        _filtered_shared_ctx = _filter_stale_hot_memory(shared_ctx, bash_facts)
+        _filtered_artifacts = _filter_stale_hot_memory(all_artifacts, bash_facts)
+        if _filtered_shared_ctx != shared_ctx or _filtered_artifacts != all_artifacts:
+            _sys_log("ᚲ stale HOT memory filtered by BASH_FACTS")
+        shared_ctx = _filtered_shared_ctx
+        all_artifacts = _filtered_artifacts
+
     synthesis     = ""
     d_persona     = 1.0   # значения по умолчанию (если Янус оффлайн)
     s_shadow      = 0.4
