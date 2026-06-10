@@ -90,10 +90,9 @@ lemonade load nomic-embed-text-v1-GGUF > /dev/null 2>&1 && echo " -> [OK] embed 
 start_server() {
     local NAME="$1" PORT="$2" MODEL="$3" CTX="$4"
     shift 4
-    local EXTRA_FLAGS="$*"
+    local EXTRA_FLAGS=("$@")
 
     echo "[ᚲ] Запуск $NAME (порт $PORT, ctx=$CTX)..."
-    # shellcheck disable=SC2086
     "$EXEC" \
         -m "$MODEL" \
         --host 127.0.0.1 \
@@ -103,7 +102,7 @@ start_server() {
         -fa auto \
         --parallel 1 \
         --reasoning off \
-        $EXTRA_FLAGS \
+        "${EXTRA_FLAGS[@]}" \
         > "$LOG_DIR/${NAME,,}.log" 2>&1 &
 
     local PID=$!
