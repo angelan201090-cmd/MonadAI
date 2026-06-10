@@ -800,6 +800,26 @@ def _task_anchor(raw_text: str) -> str:
     )
 
 
+def _collapse_repeated_paragraphs(
+    text: str,
+    max_repeats: int = 1,
+) -> tuple[str, bool]:
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", text)
+        if paragraph.strip()
+    ]
+    seen: Counter[str] = Counter()
+    collapsed = []
+    for paragraph in paragraphs:
+        if seen[paragraph] >= max_repeats:
+            continue
+        seen[paragraph] += 1
+        collapsed.append(paragraph)
+    collapsed_text = "\n\n".join(collapsed)
+    return collapsed_text, collapsed_text != text
+
+
 def janus_dyad(
     task: str,
     triad_artifacts: str,
@@ -923,6 +943,9 @@ def janus_dyad(
     }, timeout=180)
     synthesis = _extract_janus_content(synth_raw, "Синтез")
     synthesis = _protect_literals(synthesis, f"{task}\n{persona_text}")
+    synthesis, repeats_collapsed = _collapse_repeated_paragraphs(synthesis)
+    if repeats_collapsed:
+        _sys_log("ᛁ synthesis repeat collapsed")
     _sys_log(f"✨ Синтез: {len(synthesis)} символов | retry={retry_needed}")
 
     return synthesis, d_persona, s_shadow, retry_needed
