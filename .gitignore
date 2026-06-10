@@ -23,3 +23,25 @@ sandbox/
 evolution_patch_v1.json
 master_manifest.json
 list/
+
+# Runtime
+dancefloor/*.json
+dancefloor/*.jsonl
+dancefloor/*.tmp
+dancefloor/*.bak
+
+# Local binaries
+llama-b9521/
+
+# Backups
+backups/
+
+# Virtual env
+converter-env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
