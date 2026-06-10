@@ -94,6 +94,10 @@ def _load_obs_ctx() -> str:
         return ""
 
 
+def map_obs_for_center(center: str, obs_ctx: str) -> str:
+    return obs_ctx or ""
+
+
 def _is_safe_bash(script: str) -> tuple[bool, str]:
     stripped = script.strip()
     if not stripped:

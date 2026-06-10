@@ -1789,7 +1789,7 @@ def conduct(raw_text: str) -> None:
                  f"\n[{_pname}, {_oct_label}. {_d}]")
 
         _subtask = subtasks.get(_c, raw_text)
-        _mapped_obs = map_obs_for_center(_raw_obs, _c)
+        _mapped_obs = map_obs_for_center(_c, _raw_obs)
         # Марковская мембрана: фильтруем входящие ощущения под центр Дэвы.
         # Мастер-память (state["shared_memory"]) остаётся нетронутой — глобальное
         # рабочее пространство хранит абсолютную истину без каких-либо изменений.
@@ -2263,6 +2263,17 @@ def conduct(raw_text: str) -> None:
             f"{_grounding_before_recovery:.2f} -> {_grounding:.2f}"
         )
     state["grounding_score"] = round(_grounding, 4)
+
+    if repair_tact and bash_facts and _grounding >= 0.58:
+        state["stasis"] = False
+        state["failure_mode"] = ""
+        state["last_failure"] = ""
+        state["shock_count"] = 0
+        if state.get("current_note") in (8, 9) or state.get("note") in (8, 9):
+            state["current_note"] = 1
+            state["current_note_name"] = OCTAVE_NOTES[1]
+            state["note"] = 1
+        _sys_log("ᛇ repair-tact success: emergency state cleared")
 
     if _grounding < 0.30:
         _sys_log(f"🚨 СИМУЛЯКР: grounding={_grounding:.2f} — знак вне реальности (Бодрийяр ст.4)")

@@ -186,6 +186,7 @@ class SOCEngine:
         self._fired:  int = 0    # срабатываний в текущем такте
         self._pulses: int = 0    # импульсов в текущем такте
         self._sigma_window: list[float] = []
+        self._expected: dict[str, float] = {c: 0.75 for c in self.CENTERS}
         self._load()
 
     # ── I/O ──────────────────────────────────────────────────────────────────
@@ -240,6 +241,45 @@ class SOCEngine:
         self.tensions["Head"]  += weight * 1.00
         self.tensions["Heart"] += weight * 0.75
         self.tensions["Body"]  += weight * 0.55
+
+        self._auto_regulate()
+        self._save()
+
+    def update_states(
+        self,
+        signals: dict[str, float],
+        grounding: float = 1.0,
+    ) -> None:
+        """
+        Compatibility active-inference update.
+        signals: center -> observed success score 0..1.
+        grounding: system grounding score 0..1.
+        """
+        for center in self.CENTERS:
+            signal = float(signals.get(center, 0.75))
+            expected = 0.75
+            error = abs(expected - signal)
+
+            if signal < 0.3:
+                self.tensions[center] = min(
+                    Z_CRITICAL * 1.5,
+                    self.tensions[center] + 0.25 + error,
+                )
+            elif signal > 0.8:
+                self.tensions[center] = max(
+                    0.0,
+                    self.tensions[center] - 0.15,
+                )
+            else:
+                self.tensions[center] = min(
+                    Z_CRITICAL * 1.5,
+                    self.tensions[center] + error * 0.1,
+                )
+
+        if grounding < 0.5:
+            self.k_jera = min(3.0, self.k_jera + 0.10)
+        elif grounding > 0.7:
+            self.k_jera = max(0.0, self.k_jera - 0.05)
 
         self._auto_regulate()
         self._save()
@@ -351,12 +391,20 @@ class SOCEngine:
             return 9
         return None
 
-    def advance_note(self, current_note: int, fired_centers: set) -> int:
+    def advance_note(
+        self,
+        current_note: int | None = None,
+        fired_centers=None,
+        shock_flags=None,
+        **kwargs,
+    ) -> int:
         """
         Продвигает ноту Октавы.
         Нота продвигается когда доминирующий центр текущей ноты отстрелялся.
         Принудительный Провал имеет приоритет.
         """
+        current_note = 1 if current_note is None else current_note
+        fired_centers = set(fired_centers or ())
         провал = self.check_провал()
         if провал and current_note not in (8, 9):
             return провал
