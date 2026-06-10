@@ -1006,6 +1006,7 @@ def _pre_janus_allows_action(frame: dict) -> bool:
 
 _OUTWARD_ACTION_MARKERS = re.compile(
     r"запустить|скрипт|\.sh\b|\bbash\b|порт|\bram\b|\bfree\b|\bss\b"
+    r"|bash_facts|пути|имена\s+файлов|файлы|убедиться|проверить|проверка"
     r"|/home/|/mnt/",
     re.IGNORECASE,
 )

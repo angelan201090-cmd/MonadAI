@@ -190,6 +190,26 @@ class TestTactBudget(unittest.TestCase):
         for forbidden in ("RAM", "порт", "bash", "скрипт", "/home/"):
             self.assertNotIn(forbidden, result)
 
+    def test_introspection_final_filters_verification_fragments(self):
+        from core.janus_conductor import (
+            _finalize_synthesis_for_mode,
+            _pre_janus_frame,
+        )
+
+        result = _finalize_synthesis_for_mode(
+            "Я — MonadaAI внутри Monada-Hardcore.\n\n"
+            "Нужно проверить BASH_FACTS, пути и имена файлов, чтобы убедиться.",
+            "Persona описывает MonadaAI внутри Monada-Hardcore.",
+            "",
+            _pre_janus_frame("кто ты?"),
+        )
+        self.assertEqual(result, "Я — MonadaAI внутри Monada-Hardcore.")
+        for forbidden in (
+            "BASH_FACTS", "пути", "имена файлов", "файлы",
+            "убедиться", "проверить", "проверка",
+        ):
+            self.assertNotIn(forbidden, result)
+
     def test_diagnostic_without_bash_facts_gets_warning(self):
         from core.janus_conductor import (
             _finalize_synthesis_for_mode,
@@ -206,6 +226,8 @@ class TestTactBudget(unittest.TestCase):
             result,
             "нет BASH_FACTS для проверки системного состояния",
         )
+        self.assertIn("BASH_FACTS", result)
+        self.assertIn("проверки", result)
 
     def test_dyad_persona_shadow_share_endpoint(self):
         """ПЕРСОНА и ТЕНЬ делят один llama-server (8084, shared Gemma); Синтез отдельно (8086).
