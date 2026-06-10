@@ -892,10 +892,10 @@ def janus_dyad(
 
     _sys_log("✨ Янус: фаза 3 — Синтез...")
     _sg_synth = get_stargazer()
-    _synth_max_tokens = 3072
+    _synth_max_tokens = 1024
     if _sg_synth is not None:
         _guru = _sg_synth.build(deva="Guru", base_temp=0.20)
-        _synth_max_tokens = int(min(_guru.get("max_tokens", 3072), 8192))
+        _synth_max_tokens = int(min(_guru.get("max_tokens", 1024), 1024))
     _synth_user = f"Задача: {task}\n\n"
     if bash_facts:
         _synth_user += (
