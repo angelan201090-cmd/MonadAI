@@ -14,14 +14,14 @@
   {
     "name": "check_ports",
     "category": "observe",
-    "description": "Активность портов Монады (8080-8083, 13305)",
-    "command": "ss -tlnp | grep -E '808[0-3]|13305'"
+    "description": "Активность портов Монады (8081-8086, 13305)",
+    "command": "ss -tlnp | grep -E '808[1-6]|13305'"
   },
   {
     "name": "check_janus",
     "category": "observe",
-    "description": "Здоровье Януса (порт 8080)",
-    "command": "curl -s --max-time 3 http://localhost:8080/v1/models | python3 -m json.tool 2>/dev/null | grep '\"id\"' || echo 'Янус недоступен'"
+    "description": "Здоровье Синтеза/Януса (порт 8086)",
+    "command": "curl -s --max-time 3 http://localhost:8086/v1/models | python3 -m json.tool 2>/dev/null | grep '\"id\"' || echo 'Синтез недоступен'"
   },
   {
     "name": "check_lemond_models",

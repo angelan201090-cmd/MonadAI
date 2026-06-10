@@ -4,12 +4,12 @@
 # MONADA v35.0 HARDCORE GEPTARCHY — ЗАПУСК ГЕПТАРХИИ
 # =====================================================================
 # Порты:
-#   8081 — УМ       : Llama-3.2-3B-Instruct-abliterated  Q4_K_M  ctx=4096
-#   8082 — СЕРДЦЕ   : Phi-3.5-mini-instruct               Q3_K_M  ctx=4096
-#   8083 — ТЕЛО     : Qwen2.5-Coder-7B-Instruct-heretic      Q4_K_M  ctx=4096
-#   8084 — ПЕРСОНА  : Hermes-3-Llama-3.2-3B-abliterated  Q4_K_M  ctx=4096
-#   8085 — ТЕНЬ     : stablelm-zephyr-3b-Heretic           IQ4_NL  ctx=4096
-#   8086 — СИНТЕЗ   : Luna-7B-A4B-absolute-heresy          Q4_K_M  ctx=8192
+#   8081 — УМ       : Phi-4-mini-instruct                  IQ4_NL  ctx=4096
+#   8082 — СЕРДЦЕ   : Gemma-3-4B-it-heretic               IQ4_NL  ctx=4096
+#   8083 — ТЕЛО     : Granite-4.0-H-Micro                 Q6_K_XL ctx=4096
+#   8084 — ПЕРСОНА  : Gemma-4-E4B-Abliterated             IQ4_XS  ctx=4096
+#   8085 — ТЕНЬ     : Gemma-4-E4B-Abliterated             IQ4_XS  ctx=4096
+#   8086 — СИНТЕЗ   : SmolLM3-3B                          IQ4_NL  ctx=8192
 #   13305— ПОДСОЗНАНИЕ: nomic-embed-text-v1-GGUF (lemond/llamacpp)
 # =====================================================================
 
@@ -21,12 +21,12 @@ MODELS_DIR="/home/angelan/models/monadaAI"
 EXEC="$WORK_DIR/llama-b9521/llama-b9521/llama-server"
 DANCEFLOOR="/mnt/dancefloor"
 
-MODEL_UM="$MODELS_DIR/Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf"
-MODEL_SERDCE="$MODELS_DIR/Phi-3.5-mini-instruct-Q3_K_M.gguf"
-MODEL_TELO="$MODELS_DIR/Qwen2.5-Coder-7B-Instruct-heretic.Q4_K_M.gguf"
-MODEL_PERSONA="$MODELS_DIR/Hermes-3-Llama-3.2-3B-abliterated.Q4_K_M.gguf"
-MODEL_TEN="$MODELS_DIR/stablelm-zephyr-3b-Heretic_IQ4_NL.gguf"
-MODEL_SINTEZ="$MODELS_DIR/Luna-7B-A4B-absolute-heresy.Q4_K_M.gguf"
+MODEL_UM="$MODELS_DIR/microsoft_Phi-4-mini-instruct-IQ4_NL.gguf"
+MODEL_SERDCE="$MODELS_DIR/gemma-3-4b-it-heretic-iq4_nl-imat.gguf"
+MODEL_TELO="$MODELS_DIR/granite-4.0-h-micro-UD-Q6_K_XL.gguf"
+MODEL_PERSONA="$MODELS_DIR/Gemma-4-E4B-Abliterated.IQ4_XS.gguf"
+MODEL_TEN="$MODELS_DIR/Gemma-4-E4B-Abliterated.IQ4_XS.gguf"
+MODEL_SINTEZ="$MODELS_DIR/SmolLM3-3B-IQ4_NL.gguf"
 
 echo "[ᛉ] Аннигиляция старых процессов..."
 pkill -9 -f "llama-server" 2>/dev/null || true
@@ -37,13 +37,18 @@ sleep 2
 mkdir -p "$LOG_DIR"
 
 # ── Проверка моделей ──────────────────────────────────────────────────────────
+_MISSING=0
 for MODEL_PATH in "$MODEL_UM" "$MODEL_SERDCE" "$MODEL_TELO" "$MODEL_PERSONA" "$MODEL_TEN" "$MODEL_SINTEZ"; do
     if [ ! -f "$MODEL_PATH" ]; then
-        echo "[!!] Модель не найдена: $MODEL_PATH"
-        exit 1
+        echo "[WARN] Модель не найдена: $MODEL_PATH — узел будет пропущен"
+        _MISSING=$((_MISSING + 1))
     fi
 done
-echo "[OK] Все 6 модельных весов найдены."
+if [ "$_MISSING" -eq 0 ]; then
+    echo "[OK] Все 6 модельных весов найдены."
+else
+    echo "[WARN] Пропущено моделей: $_MISSING — запуск продолжается для доступных узлов."
+fi
 
 # ── Танцпол ───────────────────────────────────────────────────────────────────
 if mountpoint -q "$DANCEFLOOR" 2>/dev/null; then
@@ -162,14 +167,38 @@ start_server_optional() {
 }
 
 # ── Запуск Триады ─────────────────────────────────────────────────────────────
-start_server "UM"     8081 "$MODEL_UM"     4096
-start_server "SERDCE" 8082 "$MODEL_SERDCE" 4096
-start_server "TELO" 8083 "$MODEL_TELO" 4096
+if [ -f "$MODEL_UM" ]; then
+    start_server "UM" 8081 "$MODEL_UM" 4096
+else
+    echo "[SKIP] 8081 УМ      — файл не найден: $MODEL_UM"
+fi
+if [ -f "$MODEL_SERDCE" ]; then
+    start_server "SERDCE" 8082 "$MODEL_SERDCE" 4096
+else
+    echo "[SKIP] 8082 СЕРДЦЕ  — файл не найден: $MODEL_SERDCE"
+fi
+if [ -f "$MODEL_TELO" ]; then
+    start_server "TELO" 8083 "$MODEL_TELO" 4096
+else
+    echo "[SKIP] 8083 ТЕЛО    — файл не найден: $MODEL_TELO"
+fi
 
 # ── Запуск Януса ─────────────────────────────────────────────────────────────
-start_server "PERSONA" 8084 "$MODEL_PERSONA" 4096
-start_server "TEN"     8085 "$MODEL_TEN"     4096
-start_server "SINTEZ"  8086 "$MODEL_SINTEZ"  8192
+if [ -f "$MODEL_PERSONA" ]; then
+    start_server "PERSONA" 8084 "$MODEL_PERSONA" 4096
+else
+    echo "[SKIP] 8084 ПЕРСОНА — файл не найден: $MODEL_PERSONA"
+fi
+if [ -f "$MODEL_TEN" ]; then
+    start_server "TEN" 8085 "$MODEL_TEN" 4096
+else
+    echo "[SKIP] 8085 ТЕНЬ    — файл не найден: $MODEL_TEN"
+fi
+if [ -f "$MODEL_SINTEZ" ]; then
+    start_server "SINTEZ" 8086 "$MODEL_SINTEZ" 8192
+else
+    echo "[SKIP] 8086 СИНТЕЗ  — файл не найден: $MODEL_SINTEZ"
+fi
 
 # ── Запуск Подсознания-демона ─────────────────────────────────────────────────
 echo "[ᛈ] Запуск podsoznanie_daemon.py..."
