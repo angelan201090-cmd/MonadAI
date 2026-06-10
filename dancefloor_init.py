@@ -117,6 +117,8 @@ def build_state(crystal: dict) -> dict:
         "current_plane":      crystal.get("current_plane", 3),
         "tensor_last":        crystal.get("tensor_last", {}),
         "janus_dyad":         crystal.get("janus_dyad", {}),
+        # Archetype-кластеры восстанавливаются, но НЕ инжектятся в HOT-промпт (пока)
+        "archetype_clusters": crystal.get("archetype_clusters", {}),
     }
 
 
