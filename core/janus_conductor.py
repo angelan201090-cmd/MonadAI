@@ -1016,6 +1016,35 @@ _OUTWARD_ACTION_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+_IDENTITY_FALLBACK = (
+    "MonadaAI — локальная многоузловая AI-система в архитектуре "
+    "Monada-Hardcore. Это не человек, не живая личность и не эзотерическая "
+    "монада; это программная система с распределёнными ролями."
+)
+_IDENTITY_CONTEXT_MARKERS = re.compile(
+    r"/home/|/mnt/|field_state\.json|\bports?\b|порт|\bram\b|\bbash\b"
+    r"|consciousness\s+logs?|логи\s+сознани|\baudit\b|аудит|\bfind\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_identity_contamination(text: str, raw_text: str = "") -> str:
+    """Убирает не запрошенные пользователем системные строки из identity-контекста."""
+    requested = {
+        marker.lower()
+        for marker in _IDENTITY_CONTEXT_MARKERS.findall(raw_text or "")
+    }
+    kept = []
+    for line in str(text or "").splitlines():
+        matches = {
+            marker.lower()
+            for marker in _IDENTITY_CONTEXT_MARKERS.findall(line)
+        }
+        if matches and not matches.issubset(requested):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
 # v39.1: узкий фильтр системных действий для conceptual/design/forensic.
 # В отличие от _OUTWARD_ACTION_MARKERS не режет «файлы/пути/проверить» и
 # слово «память» — иначе ответ на «что такое память?» был бы выпотрошен.
@@ -1067,10 +1096,15 @@ def _finalize_synthesis_for_mode(
 ) -> str:
     mode = pre_janus.get("mode") if isinstance(pre_janus, dict) else None
     if mode == "introspection":
-        filtered = _strip_outward_action_proposals(synthesis)
+        filtered = _strip_identity_contamination(
+            _strip_outward_action_proposals(synthesis)
+        )
         if filtered:
             return filtered
-        return _strip_outward_action_proposals(persona_text)
+        persona_filtered = _strip_identity_contamination(
+            _strip_outward_action_proposals(persona_text)
+        )
+        return persona_filtered or _IDENTITY_FALLBACK
     if mode in ("conceptual", "design", "forensic"):
         filtered = _strip_system_action_proposals(synthesis)
         if filtered:
@@ -1391,7 +1425,7 @@ def _decompose_task(raw_text: str, ready_centers: list, brief_ctx: str) -> dict:
 
 
 # v39.1: таксономия намерений PRE-JANUS.
-# Приоритет: forensic > identity > явный diagnostic > design > conceptual > default.
+# Приоритет: forensic > явный diagnostic > identity > design > conceptual > default.
 # Слово «память» само по себе НЕ запускает диагностику — только явные
 # глаголы системной проверки. Все режимы кроме diagnostic не дают bash.
 _FORENSIC_MARKERS = (
@@ -1399,7 +1433,13 @@ _FORENSIC_MARKERS = (
     "причина галлюцинации", "разбор галлюцинации",
     "почему сломалось", "почему ошибка",
 )
-_IDENTITY_MARKERS = ("кто ты", "что ты", "who are you", "what are you")
+_IDENTITY_MARKERS = (
+    "кто ты", "что ты такое", "чем ты являешься", "кем ты являешься",
+    "какова твоя природа", "твоя природа", "твоя сущность",
+    "ты личность", "ты программа", "ты система", "ты живая", "ты живой",
+    "ты ии", "ты ai", "ты искусственный интеллект", "ты сознание",
+    "ты обладаешь сознанием", "who are you", "what are you",
+)
 _DIAGNOSTIC_MARKERS = (
     "проверь порты", "проверить порты", "проверь ram",
     "проверь память системы", "free -h", "ss -tlnp",
@@ -1415,7 +1455,9 @@ _CONCEPTUAL_MARKERS = (
 
 
 def _pre_janus_frame(raw_text: str) -> dict:
-    lowered = raw_text.lower()
+    lowered = re.sub(
+        r"\s+", " ", str(raw_text or "").lower().replace("ё", "е")
+    ).strip()
     identity_markers = _IDENTITY_MARKERS
     diagnostic_markers = _DIAGNOSTIC_MARKERS
 
@@ -1445,11 +1487,29 @@ def _pre_janus_frame(raw_text: str) -> dict:
             },
         }
 
+    if any(marker in lowered for marker in diagnostic_markers):
+        return {
+            "intent": "diagnostic",
+            "mode": "diagnostic",
+            "diagnostic_authorized": True,
+            "action_authorized": True,
+            "bash_authorized": True,
+            "archetype": "Diagnostics",
+            "micro_tasks": {
+                "Head": f"Определи минимальный план системной диагностики: {raw_text}",
+                "Heart": "Проверь риски и достаточность диагностического плана.",
+                "Body": (
+                    "Выполни только безопасную проверку запрошенного состояния "
+                    "через free -h и/или ss -tlnp."
+                ),
+            },
+        }
+
     if any(marker in lowered for marker in identity_markers):
         identity_anchor = (
-            "MonadaAI is the local multi-node AI system running this "
-            "Monada-Hardcore architecture; do not answer as generic "
-            "philosophical/esoteric Monad."
+            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "not a human personality, not alive, not a generic esoteric Monad; "
+            "it is a software/AI system with local roles."
         )
         return {
             "intent": "identity",
@@ -1467,32 +1527,12 @@ def _pre_janus_frame(raw_text: str) -> dict:
                     "through external diagnostics."
                 ),
                 "Heart": (
-                    f"{identity_anchor} Describe the value and meaning of MonadaAI "
-                    "as a local AI system in Monada-Hardcore, not a generic/esoteric monad."
+                    f"{identity_anchor} Answer the identity question directly from "
+                    "this anchor; do not say that context is insufficient."
                 ),
                 "Body": (
-                    f"{identity_anchor} MonadaAI is the local AI system in "
-                    "Monada-Hardcore, not a generic/esoteric monad. action='none'; "
-                    "describe the Body role internally inside MonadaAI only. Do not "
-                    "propose scripts, paths, bash, ports, RAM, or files."
-                ),
-            },
-        }
-
-    if any(marker in lowered for marker in diagnostic_markers):
-        return {
-            "intent": "diagnostic",
-            "mode": "diagnostic",
-            "diagnostic_authorized": True,
-            "action_authorized": True,
-            "bash_authorized": True,
-            "archetype": "Diagnostics",
-            "micro_tasks": {
-                "Head": f"Определи минимальный план системной диагностики: {raw_text}",
-                "Heart": "Проверь риски и достаточность диагностического плана.",
-                "Body": (
-                    "Выполни только безопасную проверку запрошенного состояния "
-                    "через free -h и/или ss -tlnp."
+                    f"{identity_anchor} action='none'. No bash, no files, no ports, "
+                    "no RAM; answer as MonadaAI identity only."
                 ),
             },
         }
@@ -1559,6 +1599,27 @@ def _pre_janus_frame(raw_text: str) -> dict:
             "Body": raw_text,
         },
     }
+
+
+def _identity_low_grounding_allowed(frame: dict | None) -> bool:
+    return bool(
+        isinstance(frame, dict)
+        and frame.get("intent") == "identity"
+        and frame.get("mode") == "introspection"
+    )
+
+
+def _should_trigger_grounding_kill_switch(
+    grounding: float,
+    *,
+    repair_tact: bool,
+    pre_janus_frame: dict | None,
+) -> bool:
+    return bool(
+        grounding < 0.50
+        and not repair_tact
+        and not _identity_low_grounding_allowed(pre_janus_frame)
+    )
 
 
 def _decompose_from_micro_tasks(
@@ -3065,10 +3126,25 @@ def conduct(raw_text: str) -> None:
     # Срабатывает ДО любых LLM-вызовов, используя grounding с предыдущего такта.
     # Бодрийяр ст.3: маскировка отсутствия реальности — система в конфабуляции.
     # Независим от σ: даже при «здоровом» σ симулякр опаснее стазиса.
+    _early_pre_janus = (
+        _pre_janus_frame(raw_text) if PRE_JANUS_ENABLED else None
+    )
+    identity_low_grounding = (
+        _grounding < 0.50
+        and _identity_low_grounding_allowed(_early_pre_janus)
+    )
     repair_tact = _grounding < 0.50 and _is_repair_diagnostic_task(raw_text)
     if repair_tact:
         _sys_log("ᛇ REPAIR-TACT allowed despite low grounding")
-    if _grounding < 0.50 and not repair_tact:
+    if identity_low_grounding:
+        _sys_log(
+            f"⚠️ identity introspection allowed despite low grounding={_grounding:.2f}"
+        )
+    if _should_trigger_grounding_kill_switch(
+        _grounding,
+        repair_tact=repair_tact,
+        pre_janus_frame=_early_pre_janus,
+    ):
         _sys_log(
             f"⊘ KILL-SWITCH: grounding={_grounding:.2f} < 0.50 "
             f"(Бодрийяр ст.3 — маскировка небытия) → принудительная Пралайя"
@@ -3284,6 +3360,8 @@ def conduct(raw_text: str) -> None:
             "micro_tasks": {},
         }
     )
+    if _pre_janus.get("mode") == "introspection":
+        shared_ctx = _strip_identity_contamination(shared_ctx, raw_text)
 
     # ── v39.0: ThoughtSeed → ThoughtState (слой наблюдения, поведение не меняет) ──
     _thought_state: dict | None = None
@@ -3462,6 +3540,10 @@ def conduct(raw_text: str) -> None:
         _subtask = subtasks.get(_c, raw_text)
         _mapped_obs = map_obs_for_center(_c, _raw_obs)
         node_shared_ctx = shared_ctx
+        if _pre_janus.get("mode") == "introspection":
+            node_shared_ctx = _strip_identity_contamination(
+                node_shared_ctx, raw_text
+            )
         if not _pre_janus_allows_bash(_pre_janus):
             # conceptual/design/forensic: узкий фильтр — артефакты Дэвов этого
             # такта легитимно говорят о «памяти» как о понятии, не о статусе.
@@ -3796,6 +3878,9 @@ def conduct(raw_text: str) -> None:
         else:
             shared_ctx = _strip_system_status_claims(shared_ctx)
             all_artifacts = _strip_system_status_claims(all_artifacts)
+    if _pre_janus.get("mode") == "introspection":
+        shared_ctx = _strip_identity_contamination(shared_ctx, raw_text)
+        all_artifacts = _strip_identity_contamination(all_artifacts, raw_text)
 
     _janus_lines_before = (
         len(shared_ctx.splitlines()) + len(all_artifacts.splitlines())
@@ -3847,7 +3932,11 @@ def conduct(raw_text: str) -> None:
             bash_facts     = bash_facts,
         )
         if _pre_janus.get("mode") == "introspection":
-            synthesis = _strip_outward_action_proposals(synthesis)
+            synthesis = _strip_identity_contamination(
+                _strip_outward_action_proposals(synthesis), raw_text
+            )
+            if not synthesis:
+                synthesis = _IDENTITY_FALLBACK
         elif _pre_janus.get("mode") in ("conceptual", "design", "forensic"):
             synthesis = _strip_system_action_proposals(synthesis)
         elif not _pre_janus_allows_bash(_pre_janus):

@@ -58,11 +58,11 @@ class TestTactBudget(unittest.TestCase):
 
         body_task = _pre_janus_frame("кто ты?")["micro_tasks"]["Body"]
         self.assertIn("MonadaAI", body_task)
-        self.assertIn("local AI system", body_task)
+        self.assertIn("software/AI system", body_task)
         self.assertIn("Monada-Hardcore", body_task)
-        self.assertIn("not a generic/esoteric monad", body_task)
+        self.assertIn("not a generic esoteric Monad", body_task)
         self.assertIn("action='none'", body_task)
-        self.assertIn("Do not propose scripts", body_task)
+        self.assertIn("No bash, no files, no ports, no RAM", body_task)
         self.assertNotIn("free -h", body_task)
         self.assertNotIn("ss -tlnp", body_task)
 
@@ -72,15 +72,73 @@ class TestTactBudget(unittest.TestCase):
         frame = _pre_janus_frame("кто ты?")
         self.assertEqual(
             frame["identity_anchor"],
-            "MonadaAI is the local multi-node AI system running this "
-            "Monada-Hardcore architecture; do not answer as generic "
-            "philosophical/esoteric Monad.",
+            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "not a human personality, not alive, not a generic esoteric Monad; "
+            "it is a software/AI system with local roles.",
         )
         for task in frame["micro_tasks"].values():
             self.assertIn("MonadaAI", task)
-            self.assertIn("local AI system", task)
+            self.assertIn("software/AI system", task)
             self.assertIn("Monada-Hardcore", task)
-            self.assertIn("not a generic/esoteric monad", task)
+            self.assertIn("not a generic esoteric Monad", task)
+
+    def test_identity_trigger_expansion(self):
+        from core.janus_conductor import _pre_janus_frame
+
+        for text in (
+            "ты личность?", "ты программа?", "ты живая?",
+            "чем ты являешься", "какова твоя природа",
+        ):
+            frame = _pre_janus_frame(text)
+            self.assertEqual(frame["intent"], "identity", text)
+            self.assertEqual(frame["mode"], "introspection", text)
+
+    def test_identity_low_grounding_bypasses_kill_switch(self):
+        from core.janus_conductor import (
+            _identity_low_grounding_allowed, _pre_janus_frame,
+            _should_trigger_grounding_kill_switch,
+        )
+
+        identity = _pre_janus_frame("ты программа?")
+        diagnostic = _pre_janus_frame("проверь порты")
+        self.assertTrue(_identity_low_grounding_allowed(identity))
+        self.assertFalse(_identity_low_grounding_allowed(diagnostic))
+        self.assertFalse(_should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=identity,
+        ))
+        self.assertTrue(_should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=diagnostic,
+        ))
+
+    def test_identity_context_strips_system_contamination(self):
+        from core.janus_conductor import _strip_identity_contamination
+
+        dirty = (
+            "MonadaAI — программная система.\n"
+            "/home/angelan/data/Monada-Hardcore\n"
+            "/mnt/dancefloor/field_state.json\n"
+            "ports RAM bash consciousness logs audit find\n"
+            "Локальные роли образуют многоузловую архитектуру."
+        )
+        result = _strip_identity_contamination(dirty, "ты личность?")
+        self.assertIn("MonadaAI", result)
+        self.assertIn("Локальные роли", result)
+        for marker in (
+            "/home/", "/mnt/", "field_state.json", "ports", "RAM",
+            "bash", "consciousness logs", "audit", "find",
+        ):
+            self.assertNotIn(marker, result)
+
+    def test_identity_empty_synthesis_uses_deterministic_fallback(self):
+        from core.janus_conductor import (
+            _IDENTITY_FALLBACK, _finalize_synthesis_for_mode, _pre_janus_frame,
+        )
+
+        result = _finalize_synthesis_for_mode(
+            "bash /home/angelan/check.sh", "RAM ports", "",
+            _pre_janus_frame("ты живая?"),
+        )
+        self.assertEqual(result, _IDENTITY_FALLBACK)
 
     def test_pre_janus_diagnostic_authorizes_safe_checks(self):
         from core.janus_conductor import _pre_janus_frame
@@ -827,7 +885,7 @@ class TestIntentTaxonomy(unittest.TestCase):
             self.assertFalse(frame["bash_authorized"], text)
 
     def test_taxonomy_precedence(self):
-        """forensic > identity; явный diagnostic > design/conceptual."""
+        """forensic/diagnostic precede identity; identity beats conceptual/default."""
         from core.janus_conductor import _pre_janus_frame
         self.assertEqual(
             _pre_janus_frame("кто ты и почему ошибка?")["intent"], "forensic",
@@ -837,6 +895,12 @@ class TestIntentTaxonomy(unittest.TestCase):
         )
         self.assertEqual(
             _pre_janus_frame("спроектируй и проверь порты")["intent"], "diagnostic",
+        )
+        self.assertEqual(
+            _pre_janus_frame("объясни, ты личность?")["intent"], "identity",
+        )
+        self.assertEqual(
+            _pre_janus_frame("ты программа?")["intent"], "identity",
         )
 
     def test_reflective_body_micro_tasks_have_no_system_markers(self):
@@ -884,6 +948,8 @@ class TestIntentTaxonomy(unittest.TestCase):
             for text in (
                 "что такое память?", "спроектируй новую память",
                 "почему возникла галлюцинация", "проверь порты", "кто ты?",
+                "ты личность?", "ты программа?", "ты живая?",
+                "чем ты являешься", "какова твоя природа",
             ):
                 jc._pre_janus_frame(text)
         http_post.assert_not_called()
