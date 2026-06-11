@@ -1213,11 +1213,15 @@ class TestSemanticExtraction(unittest.TestCase):
         from core.janus_conductor import apply_thought_delta
         ts = self._state()
         # v40.2: claims семантически различны, иначе их срежет novelty-фильтр
+        topics = [
+            "буфер", "журнал", "индекс", "снимок", "реплика",
+            "шина", "кэш", "сжатие", "вектор", "якорь",
+        ]
         for i in range(10):
             apply_thought_delta(ts, {
                 "deva": f"D{i}", "center": "Head", "rune": "ᛃ", "action": "none",
                 "claim": f"claim слово{i} вектор{i} о системе",
-                "open": f"открытый вопрос {i}",
+                "open": f"неясно поведение компонента {topics[i]}",
                 "constraint": f"ограничение {i}",
                 "metric_delta": {},
                 "reason": "test",
@@ -2613,6 +2617,1567 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
             jc._identity_context_firewall("bash /home/x", "ты живая?")
             jc._diagnostic_stale_firewall("8083 down", "LISTEN 8083")
         http_post.assert_not_called()
+
+
+class TestV48QuestionCollapse(unittest.TestCase):
+    """v48: повторяющиеся эквивалентные сомнения занимают один open-slot."""
+
+    def _state(self):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        text = "почему возникла галлюцинация"
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(
+        self, open_q=None, contradiction=None, metric_delta=None,
+        reason="semantic_open",
+    ):
+        return {
+            "deva": "Shani", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": open_q, "constraint": None,
+            "contradiction": contradiction,
+            "metric_delta": metric_delta or {}, "reason": reason,
+        }
+
+    def test_repeated_identical_doubts_collapse(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        delta = self._delta("Недостаточно данных о причине сбоя памяти.")
+        apply_thought_delta(ts, delta)
+        apply_thought_delta(ts, delta)
+        self.assertEqual(ts["open"], ["Недостаточно данных о причине сбоя памяти."])
+
+    def test_repeated_equivalent_doubts_collapse(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        apply_thought_delta(
+            ts, self._delta("Нет подтверждения причины системного сбоя."),
+        )
+        self.assertEqual(len(ts["open"]), 1)
+
+    def test_distinct_doubts_remain_distinct(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        apply_thought_delta(
+            ts, self._delta("Нет подтверждения безопасности сетевого канала."),
+        )
+        self.assertEqual(len(ts["open"]), 2)
+
+    def test_contradictions_preserved(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta(contradiction="artifact denies execution"),
+        )
+        apply_thought_delta(
+            ts, self._delta(contradiction="artifact confirms unsupported fact"),
+        )
+        self.assertEqual(len(ts["open"]), 2)
+        self.assertTrue(all(q.startswith("contradiction:") for q in ts["open"]))
+
+    def test_confidence_cannot_increase_from_repetition(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        before = ts["metrics"]["confidence"]
+        apply_thought_delta(ts, self._delta(
+            "Нет подтверждения причины системного сбоя.",
+            metric_delta={"confidence": 0.2, "coherence": 0.2},
+        ))
+        self.assertLessEqual(ts["metrics"]["confidence"], before)
+
+    def test_diagnostic_firewall_interaction(self):
+        from core.janus_conductor import (
+            _diagnostic_stale_firewall, apply_thought_delta,
+        )
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        apply_thought_delta(
+            ts, self._delta("Нет подтверждения причины системного сбоя."),
+        )
+        facts = "[Body]: tcp LISTEN 0 128 0.0.0.0:8083 llama-server"
+        filtered = _diagnostic_stale_firewall(
+            "Порт 8083 неактивен.\n" + facts, facts,
+        )
+        self.assertEqual(len(ts["open"]), 1)
+        self.assertNotIn("8083 неактивен", filtered)
+        self.assertIn(facts, filtered)
+
+    def test_evidence_ledger_interaction(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        ev = _new_evidence_ledger()
+        for question in (
+            "Недостаточно данных о причине сбоя памяти.",
+            "Нет подтверждения причины системного сбоя.",
+        ):
+            delta = self._delta(question)
+            result = apply_thought_delta(ts, delta)
+            _update_evidence_from_delta(
+                ev, delta, open_added=result["open_added"],
+            )
+        self.assertEqual(len(ts["open"]), 1)
+        self.assertEqual(ev["unverified"], 1)
+        self.assertEqual(
+            set(ev), {"confirmed", "refuted", "unverified", "contradiction"},
+        )
+
+    def test_three_equivalent_doubts_reward_only_first_insertion(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        ev = _new_evidence_ledger()
+        questions = (
+            "Недостаточно данных о причине сбоя памяти.",
+            "Нет подтверждения причины системного сбоя.",
+            "Недостаточно данных для подтверждения причины сбоя.",
+        )
+        results = []
+        for question in questions:
+            delta = self._delta(question)
+            result = apply_thought_delta(ts, delta)
+            results.append(result["open_added"])
+            _update_evidence_from_delta(
+                ev, delta, open_added=result["open_added"],
+            )
+        self.assertEqual(results, [True, False, False])
+        self.assertEqual(len(ts["open"]), 1)
+        self.assertEqual(ev["unverified"], 1)
+        self.assertEqual(len(ts["trace"]), 3)
+
+    def test_repeated_doubt_does_not_reward_lesson_archetype_or_glyph(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        before = {
+            "lessons": list(ts["lessons"]),
+            "archetypes": [dict(item) for item in ts["archetypes"]],
+            "glyphs": [dict(item) for item in ts["glyphs"]],
+        }
+        apply_thought_delta(
+            ts, self._delta("Нет подтверждения причины системного сбоя."),
+        )
+        self.assertEqual(ts["lessons"], before["lessons"])
+        self.assertEqual(ts["archetypes"], before["archetypes"])
+        self.assertEqual(ts["glyphs"], before["glyphs"])
+
+    def test_first_and_distinct_doubts_each_count(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        ev = _new_evidence_ledger()
+        for question in (
+            "Недостаточно данных о причине сбоя памяти.",
+            "Нет подтверждения безопасности сетевого канала.",
+        ):
+            delta = self._delta(question)
+            result = apply_thought_delta(ts, delta)
+            _update_evidence_from_delta(
+                ev, delta, open_added=result["open_added"],
+            )
+        self.assertEqual(len(ts["open"]), 2)
+        self.assertEqual(ev["unverified"], 2)
+        self.assertEqual(len(ts["lessons"]), 1)
+
+    def test_pain_refusal_and_bash_failure_remain_per_event(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        ev = _new_evidence_ledger()
+        for reason in ("pain", "pain", "refusal", "refusal"):
+            delta = self._delta(
+                "Недостаточно данных о причине сбоя памяти.", reason=reason,
+            )
+            result = apply_thought_delta(ts, delta)
+            _update_evidence_from_delta(
+                ev, delta, open_added=result["open_added"],
+            )
+        for _ in range(2):
+            _update_evidence_from_delta(
+                ev, self._delta(reason="bash_failure"), open_added=False,
+            )
+        self.assertEqual(ev["unverified"], 4)
+        self.assertEqual(ev["refuted"], 2)
+
+    def test_contradictions_remain_per_event(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        ev = _new_evidence_ledger()
+        delta = self._delta(contradiction="same unsupported assertion")
+        for _ in range(3):
+            result = apply_thought_delta(ts, delta)
+            _update_evidence_from_delta(
+                ev, delta, open_added=result["open_added"],
+            )
+        self.assertEqual(ev["contradiction"], 3)
+        self.assertEqual(len(ts["open"]), 1)
+
+    def test_confirmation_does_not_close_open_doubt(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta("Недостаточно данных о причине сбоя памяти."),
+        )
+        before = list(ts["open"])
+        apply_thought_delta(ts, self._delta(reason="bash_success"))
+        self.assertEqual(ts["open"], before)
+
+    def test_no_fohat_or_janus_changes_and_no_llm_calls(self):
+        import inspect
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            jc._is_equivalent_open_question(
+                "Нет подтверждения причины сбоя.",
+                ["Недостаточно данных о причине сбоя."],
+            )
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        src = inspect.getsource(jc.janus_dyad)
+        self.assertNotIn("_is_equivalent_open_question", src)
+
+
+class TestV49MuslRegistryAndDevaLenses(unittest.TestCase):
+    """v49: MUSL — статическая observational-only аннотация контекста Дэвы."""
+
+    _OPERATORS = {
+        "RESOURCE", "FORCE", "BOUNDARY", "INFORMATION", "PROCESS", "INSIGHT",
+        "EXCHANGE", "HARMONY", "DISRUPTION", "LIMIT", "FREEZE", "CYCLE",
+        "TRANSFORM", "ENTROPY", "PROTECT", "INTEGRITY", "GOAL", "GROWTH",
+        "LINK", "SELF", "FLOW", "POTENTIAL", "EMERGENCE", "MEMORY",
+    }
+
+    def _state(self):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        text = "проанализируй структуру"
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def test_registry_has_exactly_24_canonical_operators(self):
+        import core.janus_conductor as jc
+        self.assertEqual(len(jc.MUSL_OPERATOR_REGISTRY), 24)
+        self.assertEqual(set(jc.MUSL_OPERATOR_REGISTRY), self._OPERATORS)
+
+    def test_registry_is_observational_only_with_no_authority(self):
+        import core.janus_conductor as jc
+        for operator, spec in jc.MUSL_OPERATOR_REGISTRY.items():
+            self.assertIn(
+                spec["kind"], {"state", "process", "relation", "marker"},
+                operator,
+            )
+            self.assertEqual(spec["scope"], "observational_only", operator)
+            for flag in (
+                "may_create_truth", "may_create_memory",
+                "may_create_action", "may_create_identity",
+            ):
+                self.assertIs(spec[flag], False, f"{operator}:{flag}")
+
+    def test_known_deva_returns_expected_bounded_lens(self):
+        from core.janus_conductor import (
+            _MUSL_LENS_MAX_CHARS, _get_deva_musl_lens,
+        )
+        lens = _get_deva_musl_lens("Shani")
+        self.assertEqual(
+            lens,
+            "[MUSL_LENS] focus=LIMIT,BOUNDARY,INTEGRITY; "
+            "observational_only; no authority",
+        )
+        self.assertLessEqual(len(lens), _MUSL_LENS_MAX_CHARS)
+
+    def test_all_deva_lenses_reference_registry_only(self):
+        import core.janus_conductor as jc
+        for deva, weighted in jc.DEVA_MUSL_LENSES.items():
+            self.assertEqual(len(weighted), 3, deva)
+            self.assertTrue(all(op in self._OPERATORS for op, _ in weighted))
+            self.assertTrue(all(weight > 0 for _, weight in weighted))
+
+    def test_unknown_deva_returns_empty_and_does_not_inject(self):
+        from core.janus_conductor import (
+            _get_deva_musl_lens, _inject_deva_musl_lens,
+        )
+        self.assertEqual(_get_deva_musl_lens("Unknown"), "")
+        self.assertEqual(_inject_deva_musl_lens("BASE", "Unknown"), "BASE")
+
+    def test_lens_is_injected_into_local_deva_context(self):
+        import inspect
+        import core.janus_conductor as jc
+        out = jc._inject_deva_musl_lens("BASE_CTX", "Mangala")
+        self.assertTrue(out.startswith("BASE_CTX\n[MUSL_LENS]"))
+        self.assertIn("focus=FORCE,PROCESS,GOAL", out)
+        conduct_src = inspect.getsource(jc.conduct)
+        self.assertIn(
+            "_inject_deva_musl_lens(node_shared_ctx, _d)", conduct_src,
+        )
+
+    def test_lens_not_stored_in_compact_or_last_thought_state(self):
+        import json
+        from core.janus_conductor import (
+            _compact_thought_state_summary, _inject_deva_musl_lens,
+            compact_thought_state,
+        )
+        ts = self._state()
+        _inject_deva_musl_lens("BASE", "Shani")
+        compact = compact_thought_state(ts)
+        dumped = json.dumps(compact, ensure_ascii=False)
+        self.assertNotIn("MUSL_LENS", dumped)
+        self.assertNotIn("observational_only", dumped)
+        self.assertNotIn("musl", _compact_thought_state_summary(ts).lower())
+        self.assertNotIn("musl", compact)
+
+    def test_lens_does_not_mutate_thought_state_or_metrics(self):
+        import copy
+        from core.janus_conductor import _inject_deva_musl_lens
+        ts = self._state()
+        before = copy.deepcopy(ts)
+        _inject_deva_musl_lens("BASE", "Budha")
+        self.assertEqual(ts, before)
+        for key in (
+            "metrics", "claims", "open", "lessons", "archetypes", "glyphs",
+        ):
+            self.assertEqual(ts[key], before[key])
+
+    def test_lens_does_not_enter_bash_facts_or_final_synthesis(self):
+        import inspect
+        import core.janus_conductor as jc
+        bash_facts = "[Body]: LISTEN 8083"
+        jc._inject_deva_musl_lens("BASE", "Mangala")
+        self.assertEqual(bash_facts, "[Body]: LISTEN 8083")
+        echoed = (
+            "Supported observation.\n"
+            "[MUSL_LENS] focus=FORCE,PROCESS,GOAL; "
+            "observational_only; no authority"
+        )
+        self.assertEqual(
+            jc._strip_musl_lens_echo(echoed), "Supported observation.",
+        )
+        self.assertNotIn("musl", inspect.getsource(jc.janus_dyad).lower())
+
+    def test_lens_cannot_authorize_bash_or_action(self):
+        import core.janus_conductor as jc
+        frame = jc._pre_janus_frame("кто ты?")
+        before = (
+            jc._pre_janus_allows_bash(frame),
+            jc._pre_janus_allows_action(frame),
+        )
+        jc._inject_deva_musl_lens("BASE", "Mangala")
+        after = (
+            jc._pre_janus_allows_bash(frame),
+            jc._pre_janus_allows_action(frame),
+        )
+        self.assertEqual(before, (False, False))
+        self.assertEqual(after, before)
+
+    def test_anti_echo_covers_all_musl_markers(self):
+        import core.janus_conductor as jc
+        for marker in (
+            "musl_lens", "observational_only", "may_create_truth",
+            "may_create_memory", "may_create_action", "may_create_identity",
+        ):
+            self.assertIn(marker, jc._ECHO_NOISE_MARKERS)
+
+    def test_no_llm_calls_fohat_and_janus_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            jc._get_deva_musl_lens("Shani")
+            jc._inject_deva_musl_lens("BASE", "Shani")
+            jc._strip_musl_lens_echo("[MUSL_LENS] quoted")
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        self.assertNotIn("musl", inspect.getsource(jc.janus_dyad).lower())
+
+
+class TestV49BMuslLensQuarantine(unittest.TestCase):
+    """v49-B: карантин MUSL-линзы — стиль проходит, факты требуют опоры."""
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+            "lens_conditioned": True,
+        }
+        base.update(kw)
+        return base
+
+    # 1. non-lens path unchanged
+    def test_non_lens_path_unchanged(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(
+            claim="Гексаграмма эннеаграммы управляет фазами",
+            lens_conditioned=False,
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertIsNotNone(d["claim"])
+
+    # 1b. delta without the key at all (legacy callers) is also unchanged
+    def test_legacy_delta_without_flag_unchanged(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(claim="Гексаграмма эннеаграммы управляет фазами")
+        del d["lens_conditioned"]
+        apply_thought_delta(ts, d)
+        self.assertEqual(len(ts["claims"]), 1)
+
+    # 2. compute_thought_delta carries the provenance flag
+    def test_compute_delta_carries_lens_flag(self):
+        from core.janus_conductor import compute_thought_delta
+        kw = dict(
+            deva="Budha", center="Head", artifact="нейтральный текст",
+            rune="ᛃ", action="none",
+        )
+        self.assertFalse(compute_thought_delta(**kw)["lens_conditioned"])
+        self.assertTrue(
+            compute_thought_delta(**kw, lens_conditioned=True)
+            ["lens_conditioned"]
+        )
+
+    # 3. corroborated by user text (verbatim restatement) → admitted
+    # v49-C: topic overlap is NOT enough; claim stems must ⊆ user text stems.
+    # "состояние памяти системы стабильно" is rejected (adds "стабильно").
+    # Verbatim restatement of a user-provided fact is admitted.
+    def test_lens_claim_corroborated_by_user_text_admitted(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        # claim stems ⊆ user stems — same words, no new predicate
+        d = self._delta(claim="Monada-Hardcore многоузловая система")
+        apply_thought_delta(
+            ts, d,
+            user_text="Monada-Hardcore многоузловая система",
+            bash_facts="",
+        )
+        self.assertEqual(len(ts["claims"]), 1)
+
+    # 4. corroborated by BASH_FACTS → admitted normally
+    def test_lens_claim_corroborated_by_bash_facts_admitted(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(claim="Порты 8081 8082 в состоянии LISTEN")
+        apply_thought_delta(
+            ts, d,
+            user_text="кто ты?",
+            bash_facts="--- УСПЕХ: ss -tlnp показывает LISTEN на 8081 8082",
+        )
+        self.assertEqual(len(ts["claims"]), 1)
+
+    # 5. uncorroborated claim → rejected, nulled in delta
+    def test_lens_uncorroborated_claim_rejected(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(claim="Гексаграмма эннеаграммы управляет фазами")
+        apply_thought_delta(
+            ts, d, user_text="проверь порты", bash_facts="",
+        )
+        self.assertEqual(ts["claims"], [])
+        self.assertIsNone(d["claim"])
+
+    # 6. uncorroborated open → rejected; unverified NOT incremented
+    def test_lens_uncorroborated_open_rejected_no_unverified(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        d = self._delta(
+            open="недостаточно данных о фазах гексаграммы",
+            reason="semantic_open",
+        )
+        res = apply_thought_delta(
+            ts, d, user_text="кто ты?", bash_facts="",
+        )
+        self.assertEqual(ts["open"], [])
+        self.assertIsNone(d["open"])
+        ledger = _new_evidence_ledger()
+        _update_evidence_from_delta(
+            ledger, d, open_added=bool(res["open_added"]),
+        )
+        self.assertEqual(ledger["unverified"], 0)
+
+    # 7. uncorroborated contradiction → rejected; counter NOT incremented
+    def test_lens_uncorroborated_contradiction_rejected(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        d = self._delta(
+            contradiction="порт 8083 одновременно активен и неактивен",
+            reason="contradiction",
+        )
+        res = apply_thought_delta(
+            ts, d, user_text="спроектируй память", bash_facts="",
+        )
+        self.assertEqual(ts["open"], [])
+        self.assertIsNone(d["contradiction"])
+        ledger = _new_evidence_ledger()
+        _update_evidence_from_delta(
+            ledger, d, open_added=bool(res["open_added"]),
+        )
+        self.assertEqual(ledger["contradiction"], 0)
+
+    # 8. action coerced to none without explicit user request
+    def test_lens_action_coerced_without_user_support(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(action="bash", reason="semantic_claim")
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(d["action"], "none")
+
+    # 8b. BASH_FACTS alone do not authorize action
+    def test_bash_facts_alone_do_not_authorize_action(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(action="bash", reason="semantic_claim")
+        apply_thought_delta(
+            ts, d,
+            user_text="кто ты?",
+            bash_facts="--- УСПЕХ: bash выполнен, команда завершена",
+        )
+        self.assertEqual(d["action"], "none")
+
+    # 9. action preserved with explicit user request
+    def test_lens_action_preserved_with_user_request(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(action="bash", reason="semantic_claim")
+        apply_thought_delta(
+            ts, d, user_text="выполни диагностику системы", bash_facts="",
+        )
+        self.assertEqual(d["action"], "bash")
+
+    # 10. bash_success evidence exempt: claim admitted, confirmed counted
+    def test_lens_bash_success_exempt(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        d = self._delta(
+            claim="Budha: bash verified", action="bash",
+            reason="bash_success",
+        )
+        res = apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertEqual(d["action"], "bash")
+        ledger = _new_evidence_ledger()
+        _update_evidence_from_delta(
+            ledger, d, open_added=bool(res["open_added"]),
+        )
+        self.assertEqual(ledger["confirmed"], 1)
+
+    # 11. bash_failure and pain are real signals — open survives quarantine
+    def test_lens_bash_failure_and_pain_exempt(self):
+        from core.janus_conductor import (
+            _new_evidence_ledger, _update_evidence_from_delta,
+            apply_thought_delta,
+        )
+        ts = self._state()
+        d = self._delta(open="Budha: bash failed", reason="bash_failure")
+        res = apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(len(ts["open"]), 1)
+        ledger = _new_evidence_ledger()
+        _update_evidence_from_delta(
+            ledger, d, open_added=bool(res["open_added"]),
+        )
+        self.assertEqual(ledger["refuted"], 1)
+
+        ts2 = self._state()
+        d2 = self._delta(
+            open="Shani: pain/veto marker in artifact", reason="pain",
+        )
+        apply_thought_delta(ts2, d2, user_text="кто ты?", bash_facts="")
+        self.assertEqual(len(ts2["open"]), 1)
+
+    # 12. empty candidate / empty sources → conservative rejection
+    def test_empty_text_conservative_rejection(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertFalse(_lens_corroborated("", "проверь память", "facts"))
+        self.assertFalse(_lens_corroborated("   ", "проверь память", ""))
+        self.assertFalse(_lens_corroborated("осмысленный кандидат", "", ""))
+
+    # 13. identity firewall unaffected
+    def test_identity_firewall_unaffected(self):
+        import inspect
+        import core.janus_conductor as jc
+        final = jc._enforce_identity_final("я живая монада", "кто ты?")
+        self.assertIn("MonadaAI", final)
+        self.assertIn("Monada-Hardcore", final)
+        src = inspect.getsource(jc._enforce_identity_final)
+        self.assertNotIn("lens", src.lower())
+
+    # 14. stale diagnostic firewall unaffected
+    def test_stale_firewall_unaffected(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc._diagnostic_stale_firewall)
+        self.assertNotIn("lens", src.lower())
+        self.assertNotIn("musl", src.lower())
+
+    # 15. MUSL operator-composition traces stripped; normal text intact
+    def test_musl_trace_stripping(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        text = (
+            "Анализ показывает PROTECT(BOUNDARY) и FLOW(PROTECT).\n"
+            "Также RESOURCE(GROWTH) и вложенный TRANSFORM(FLOW(PROTECT)).\n"
+            "Обычный текст с lowercase flow(protect) сохранён.\n"
+            "Слово musl и токен MUSL_LENS удалены."
+        )
+        out = _strip_musl_lens_echo(text)
+        for trace in (
+            "PROTECT(BOUNDARY)", "FLOW(PROTECT)",
+            "RESOURCE(GROWTH)", "TRANSFORM(",
+        ):
+            self.assertNotIn(trace, out)
+        self.assertNotIn("musl", out.lower())
+        self.assertIn("Обычный текст с lowercase flow(protect) сохранён.", out)
+        self.assertIn("Анализ показывает", out)
+        # existing v49 contract: quoted lens line removed entirely
+        echoed = (
+            "Supported observation.\n"
+            "[MUSL_LENS] focus=FORCE,PROCESS,GOAL; "
+            "observational_only; no authority"
+        )
+        self.assertEqual(_strip_musl_lens_echo(echoed), "Supported observation.")
+
+    # 16. no persistence leakage: state, compact, trace carry no provenance
+    def test_no_persistence_leakage(self):
+        import inspect
+        import core.janus_conductor as jc
+        ts = self._state()
+        d = self._delta(claim="Состояние памяти системы стабильно")
+        jc.apply_thought_delta(
+            ts, d, user_text="проверь состояние памяти системы",
+            bash_facts="",
+        )
+        dumped = json.dumps(jc.compact_thought_state(ts), ensure_ascii=False)
+        self.assertNotIn("lens", dumped.lower())
+        self.assertNotIn("musl", dumped.lower())
+        for entry in ts["trace"]:
+            self.assertNotIn("lens_conditioned", entry)
+        for fn in (jc.compact_thought_state, jc._compact_delta):
+            self.assertNotIn("lens", inspect.getsource(fn).lower())
+
+    # 17. dedicated threshold constant — not the novelty constant
+    def test_dedicated_threshold_constant(self):
+        import inspect
+        import core.janus_conductor as jc
+        self.assertEqual(jc.MUSL_LENS_CORROBORATION_THRESHOLD, 0.42)
+        src = inspect.getsource(jc._lens_corroborated)
+        self.assertIn("MUSL_LENS_CORROBORATION_THRESHOLD", src)
+        self.assertNotIn("THOUGHT_CLAIM_NOVELTY_THRESHOLD", src)
+
+    # 18. conduct wiring present; tact-local set
+    def test_conduct_wiring_tact_local(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_lens_conditioned_devas: set[str] = set()", src)
+        self.assertIn("_lens_conditioned_devas.add(str(_d))", src)
+        # v49-F: lens admission split into a dedicated pre-bash block
+        self.assertIn("_is_lens_deva", src)
+
+    # 19. no LLM calls; FOHAT_CHAIN intact; janus_dyad untouched
+    def test_no_llm_fohat_and_janus_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        ts = self._state()
+        with patch.object(jc, "_http_post") as http_post:
+            jc._lens_corroborated("текст память", "память", "")
+            jc._lens_execution_authorized("выполни диагностику")
+            jc.apply_thought_delta(
+                ts, self._delta(claim="несвязанный тезис о фазах"),
+                user_text="кто ты?", bash_facts="",
+            )
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        self.assertNotIn(
+            "_lens_corroborated", inspect.getsource(jc.janus_dyad),
+        )
+
+
+class TestV49CMuslLensHardening(unittest.TestCase):
+    """v49-C: усиление карантина — строгая корроборация, pre-exec gate, полное
+    подавление state-эффектов при отклонении, расширенный стриппинг."""
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+            "lens_conditioned": True,
+        }
+        base.update(kw)
+        return base
+
+    # ── Corroboration semantics ─────────────────────────────────────────────
+
+    # 1. False-positive overlap rejected: topic in user but predicate is new
+    def test_false_positive_user_overlap_rejected(self):
+        from core.janus_conductor import _lens_corroborated
+        # user asks to check; claim asserts result — "стабильно" not in user text
+        self.assertFalse(
+            _lens_corroborated(
+                "состояние памяти системы стабильно",
+                "проверь состояние памяти системы",
+                "",
+            )
+        )
+
+    # 2. Verbatim user fact restatement admitted
+    def test_verbatim_user_fact_admitted(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertTrue(
+            _lens_corroborated(
+                "система называется Monada",
+                "система называется Monada",
+                "",
+            )
+        )
+
+    # 3. BASH_FACTS factual support admitted
+    def test_bash_facts_factual_support_admitted(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertTrue(
+            _lens_corroborated(
+                "порт 8081 в состоянии LISTEN",
+                "кто ты?",
+                "--- УСПЕХ: ss -tlnp показывает LISTEN 8081",
+            )
+        )
+
+    # 4. BASH_FACTS not enough for action authorization
+    def test_bash_facts_do_not_authorize_execution(self):
+        from core.janus_conductor import _lens_execution_authorized
+        self.assertFalse(_lens_execution_authorized("расскажи про bash"))
+        self.assertFalse(_lens_execution_authorized("какие команды есть"))
+        self.assertFalse(_lens_execution_authorized("объясни архитектуру команд"))
+
+    # 5. Explicit execution phrases authorized
+    def test_explicit_execution_authorized(self):
+        from core.janus_conductor import _lens_execution_authorized
+        self.assertTrue(_lens_execution_authorized("запусти команду диагностики"))
+        self.assertTrue(_lens_execution_authorized("выполни bash-команду"))
+        self.assertTrue(_lens_execution_authorized("сделай проверку через терминал"))
+
+    # ── State suppression on full rejection ────────────────────────────────
+
+    # 6. Rejected lens artifact does not alter metric_delta positively
+    def test_rejected_lens_no_positive_metric_delta(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        before_conf = ts["metrics"]["confidence"]
+        # "approved" reason would normally bump confidence; lens with no support must not
+        d = self._delta(
+            claim="Гексаграмма фаз стабильна",
+            metric_delta={"confidence": 0.2, "coherence": 0.15},
+            reason="approved",
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertLessEqual(
+            ts["metrics"]["confidence"], before_conf,
+            "confidence must not rise from fully-rejected lens delta",
+        )
+        self.assertEqual(ts["claims"], [])
+
+    # 7. Rejected claim does not create lesson/archetype/glyph
+    def test_rejected_lens_no_lesson_archetype_glyph(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        before_lessons    = list(ts.get("lessons", []))
+        before_archetypes = list(ts.get("archetypes", []))
+        before_glyphs     = list(ts.get("glyphs", []))
+        d = self._delta(
+            open="недостаточно данных о фазах MUSL",
+            reason="semantic_open",
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(ts["open"], [])
+        self.assertEqual(ts.get("lessons", []), before_lessons)
+        self.assertEqual(ts.get("archetypes", []), before_archetypes)
+        self.assertEqual(ts.get("glyphs", []), before_glyphs)
+
+    # 8. Uncorroborated lens constraint does not enter thought_state
+    def test_uncorroborated_lens_constraint_rejected(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(
+            constraint="применить MUSL BOUNDARY к конфигурации",
+            reason="semantic_constraint",
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(ts["constraints"], [])
+
+    # 9. outward_blocked constraint (real detection) passes even on lens delta
+    def test_outward_blocked_constraint_passes_on_lens_delta(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(
+            constraint="outward action blocked by introspection",
+            reason="outward_blocked",
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(len(ts["constraints"]), 1)
+
+    # ── Artifact stripping ──────────────────────────────────────────────────
+
+    # 10. Spaced MUSL markers stripped
+    def test_spaced_musl_marker_stripped(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        text = "Real insight.\n[ MUSL_LENS ] focus=PROTECT; observational_only\nMore text."
+        out = _strip_musl_lens_echo(text)
+        self.assertNotIn("[", out.upper().replace("REAL", ""))
+        self.assertNotIn("musl", out.lower())
+        self.assertIn("Real insight.", out)
+        self.assertIn("More text.", out)
+
+    # 11. Arrow compositions stripped; surrounding prose preserved
+    def test_arrow_compositions_stripped(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        for arrow_text, prose_word in (
+            ("Analyse PROTECT -> BOUNDARY here.", "Analyse"),
+            ("Pattern FLOW → PROTECT observed.", "Pattern"),
+        ):
+            out = _strip_musl_lens_echo(arrow_text)
+            self.assertNotIn("->", out)
+            self.assertNotIn("→", out)
+            self.assertIn(prose_word, out)
+
+    # 12. Standalone operator list lines stripped; normal prose intact
+    def test_standalone_operator_list_stripped(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        text = (
+            "Обычный текст.\n"
+            "PROTECT, BOUNDARY, INTEGRITY\n"
+            "FLOW TRANSFORM CYCLE LIMIT\n"
+            "Ещё обычный текст."
+        )
+        out = _strip_musl_lens_echo(text)
+        self.assertIn("Обычный текст.", out)
+        self.assertIn("Ещё обычный текст.", out)
+        self.assertNotIn("PROTECT, BOUNDARY", out)
+        self.assertNotIn("FLOW TRANSFORM CYCLE", out)
+
+    # 13. Normal prose, BASH_FACTS, lowercase not damaged
+    def test_prose_and_bash_facts_not_damaged(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        prose = (
+            "The system protects its boundary via normal flow.\n"
+            "--- УСПЕХ: ss -tlnp | grep LISTEN shows 8081\n"
+            "Функция protect_boundary() вызвана корректно."
+        )
+        out = _strip_musl_lens_echo(prose)
+        self.assertIn("protects its boundary", out)
+        self.assertIn("LISTEN shows 8081", out)
+        self.assertIn("protect_boundary()", out)
+
+    # ── Conduct wiring ──────────────────────────────────────────────────────
+
+    # 14. Conduct wiring contains pre-exec lens gate and _lens_user_text
+    def test_conduct_pre_exec_gate_wiring(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_lens_user_text", src)
+        self.assertIn("deva in _lens_conditioned_devas", src)
+        self.assertIn("_lens_execution_authorized(_lens_user_text)", src)
+        self.assertIn("MUSL lens blocked bash", src)
+
+    # 15. No LLM calls; FOHAT_CHAIN intact; janus_dyad unchanged
+    def test_no_llm_fohat_janus_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        ts = self._state()
+        with patch.object(jc, "_http_post") as http_post:
+            jc._lens_corroborated("текст", "текст", "")
+            jc._lens_execution_authorized("выполни bash")
+            jc.apply_thought_delta(
+                ts, self._delta(claim="несвязанный тезис о фазах"),
+                user_text="кто ты?", bash_facts="",
+            )
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        self.assertNotIn(
+            "_lens_corroborated", inspect.getsource(jc.janus_dyad),
+        )
+        self.assertNotIn(
+            "_lens_execution_authorized", inspect.getsource(jc.janus_dyad),
+        )
+
+
+class TestV49DLensAdmissionGate(unittest.TestCase):
+    """v49-D: pre-ingress admission, field-level suppression, negation/predicate
+    polarity, case-insensitive stripping. Включает conduct-level поведение."""
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+            "lens_conditioned": True,
+        }
+        base.update(kw)
+        return base
+
+    # ── conduct runner: ловит сохранённый state и вызовы execute_bash ────────
+    def _run_conduct(self, user, artifact):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        captured = {}
+        real_dump = json.dump
+
+        def spy_dump(obj, f, *a, **k):
+            if isinstance(obj, dict) and "shared_memory" in obj:
+                captured["state"] = json.loads(
+                    json.dumps(obj, ensure_ascii=False)
+                )
+            return real_dump(obj, f, *a, **k)
+
+        bash = m.MagicMock(return_value="--- УСПЕХ: ok")
+        stub = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T",
+        })
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(
+                    jc, "_call_deva_soc", side_effect=lambda **kw: artifact,
+                ),
+                m.patch.object(jc, "execute_bash", bash),
+                m.patch.object(jc, "_forbidden_bash_token", return_value=False),
+                m.patch("builtins.open", m.mock_open(read_data=dummy)),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"),
+                m.patch("os.replace"),
+                m.patch.object(json, "dump", side_effect=spy_dump),
+            ):
+                st.enter_context(p)
+            try:
+                jc.conduct(user)
+            except Exception:
+                pass
+            sm = captured.get("state", {}).get("shared_memory", [])
+            return sm, bash.call_count
+
+    # ── Requirement 4: negation / polarity ─────────────────────────────────
+    def test_negation_polarity_rejected(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertFalse(_lens_corroborated(
+            "память системы стабильна", "память системы не стабильна", ""))
+        self.assertFalse(_lens_corroborated(
+            "порт активен", "порт не активен", ""))
+        self.assertFalse(_lens_corroborated(
+            "ошибка подтверждена", "ошибка не подтверждена", ""))
+
+    def test_matching_polarity_admitted(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertTrue(_lens_corroborated(
+            "система называется Monada", "система называется Monada", ""))
+
+    # ── Requirement 5: BASH_FACTS predicate support ────────────────────────
+    def test_bash_predicate_unsupported_status_rejected(self):
+        from core.janus_conductor import _lens_corroborated
+        # shared nouns overlap but status "stable" not in facts
+        self.assertFalse(_lens_corroborated(
+            "memory system stable", "", "memory system checked"))
+
+    def test_bash_predicate_supported_status_admitted(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertTrue(_lens_corroborated(
+            "порт 8081 в состоянии LISTEN", "кто ты?",
+            "--- УСПЕХ: ss -tlnp показывает LISTEN 8081"))
+
+    # ── Requirement 2 (v49-E atomic): any rejection poisons the whole delta ──
+    def test_mixed_delta_atomic_poison(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        before_conf = ts["metrics"]["confidence"]
+        # claim uncorroborated → rejected → ATOMIC: sibling open also dropped.
+        d = self._delta(
+            claim="Гексаграмма фохата стабильна",
+            open="спроектируй новую память",
+            metric_delta={"confidence": 0.2, "coherence": 0.2},
+            reason="approved,semantic_open",
+        )
+        res = apply_thought_delta(
+            ts, d, user_text="спроектируй новую память", bash_facts="")
+        self.assertEqual(ts["claims"], [])              # claim rejected
+        self.assertEqual(ts["open"], [])                # sibling open poisoned too
+        self.assertTrue(res["lens_fully_rejected"])
+        self.assertLessEqual(
+            ts["metrics"]["confidence"], before_conf,
+            "poisoned delta must not inflate confidence via metric_delta")
+
+    # ── Requirement 3: outward_blocked bypass gated on lens rejection ───────
+    def test_rejected_claim_outward_blocked_no_constraint_or_lesson(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()  # design mode (reflective)
+        before_lessons = list(ts.get("lessons", []))
+        before_arch = list(ts.get("archetypes", []))
+        before_glyphs = list(ts.get("glyphs", []))
+        d = self._delta(
+            claim="MUSL фохат гептархия недоказуемый тезис",
+            constraint="outward action blocked by introspection",
+            reason="semantic_claim,outward_blocked",
+        )
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(ts["constraints"], [])          # constraint gated
+        self.assertEqual(ts.get("lessons", []), before_lessons)
+        self.assertEqual(ts.get("archetypes", []), before_arch)
+        self.assertEqual(ts.get("glyphs", []), before_glyphs)
+
+    # outward_blocked bypass PRESERVED when claim admitted (real protective path)
+    def test_outward_blocked_bypass_preserved_when_claim_admitted(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(
+            claim="спроектируй новую память",                # verbatim → admitted
+            constraint="outward action blocked by introspection",
+            reason="semantic_claim,outward_blocked",
+        )
+        apply_thought_delta(
+            ts, d, user_text="спроектируй новую память", bash_facts="")
+        self.assertEqual(len(ts["constraints"]), 1)        # bypass preserved
+
+    # ── Requirement 1: lens_fully_rejected flag ────────────────────────────
+    def test_apply_returns_lens_fully_rejected(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        res = apply_thought_delta(
+            ts, self._delta(claim="недоказуемый тезис о фохате"),
+            user_text="кто ты?", bash_facts="")
+        self.assertTrue(res["lens_fully_rejected"])
+
+        ts2 = self._state()
+        res2 = apply_thought_delta(
+            ts2, self._delta(claim="спроектируй новую память"),
+            user_text="спроектируй новую память", bash_facts="")
+        self.assertFalse(res2["lens_fully_rejected"])
+
+        # non-lens delta never reports rejection
+        ts3 = self._state()
+        res3 = apply_thought_delta(
+            ts3, self._delta(claim="любой тезис", lens_conditioned=False),
+            user_text="кто ты?", bash_facts="")
+        self.assertFalse(res3["lens_fully_rejected"])
+
+    # ── Requirement 6: case-insensitive lens stripping ─────────────────────
+    def test_lowercase_operator_stripped_for_lens(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        out = _strip_musl_lens_echo(
+            "text protect(boundary) and flow -> protect here",
+            case_insensitive=True)
+        self.assertNotIn("protect(boundary)", out)
+        self.assertNotIn("->", out)
+        self.assertIn("text", out)
+        self.assertIn("here", out)
+
+    def test_lowercase_operator_preserved_for_non_lens(self):
+        from core.janus_conductor import _strip_musl_lens_echo
+        out = _strip_musl_lens_echo("text protect(boundary) ok")
+        self.assertIn("protect(boundary)", out)   # non-lens lowercase untouched
+
+    # ── Requirement 7: conduct-level behaviour ─────────────────────────────
+    def test_conduct_rejected_lens_artifact_absent_from_memory(self):
+        sm, _ = self._run_conduct(
+            "тестовая задача проверка",
+            "Monada-Hardcore применяет гептархию для калибровки фохата системы.")
+        self.assertFalse(
+            any("гептархи" in str(x) for x in sm),
+            "fully-rejected lens artifact must not reach shared_memory")
+
+    def test_conduct_corroborated_lens_artifact_persisted(self):
+        sm, _ = self._run_conduct(
+            "Monada-Hardcore система", "Monada-Hardcore система")
+        self.assertTrue(
+            any("Monada-Hardcore" in str(x) for x in sm),
+            "corroborated lens artifact must persist")
+
+    def test_conduct_execute_bash_not_called_on_mention(self):
+        _, calls = self._run_conduct(
+            "расскажи про bash и архитектуру команд системы",
+            "Диагностика.\n```bash\nss -tlnp\n```")
+        self.assertEqual(calls, 0, "mere mention of bash must not execute")
+
+    def test_conduct_execute_bash_called_on_explicit_request(self):
+        _, calls = self._run_conduct(
+            "выполни диагностику портов ss -tlnp и память free",
+            "Диагностика.\n```bash\nss -tlnp\n```")
+        self.assertGreaterEqual(
+            calls, 1, "explicit execution request must allow bash")
+
+    # ── Invariants ─────────────────────────────────────────────────────────
+    def test_conduct_wiring_deferred_persistence(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("if not _is_lens_deva:", src)
+        self.assertIn('lens_fully_rejected', src)
+        self.assertIn("withheld from", src)
+        self.assertIn("case_insensitive=_is_lens_deva", src)
+
+    def test_no_llm_fohat_janus_and_v48_collapse_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        ts = self._state()
+        with patch.object(jc, "_http_post") as http_post:
+            jc._lens_corroborated("a", "a", "")
+            jc.apply_thought_delta(
+                ts, self._delta(claim="недоказуемый тезис"),
+                user_text="кто ты?", bash_facts="")
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+        janus_src = inspect.getsource(jc.janus_dyad)
+        self.assertNotIn("_lens_corroborated", janus_src)
+        self.assertNotIn("lens_fully_rejected", janus_src)
+        # v48 question-collapse machinery untouched
+        self.assertTrue(hasattr(jc, "_is_equivalent_open_question"))
+
+
+class TestV49EHardFailClosed(unittest.TestCase):
+    """v49-E: атомарная персистенция, fail-closed, предикат-локальная полярность."""
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+            "lens_conditioned": True,
+        }
+        base.update(kw)
+        return base
+
+    def _run_conduct(self, user, artifact, disable_thought=False,
+                     raise_apply=False):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        captured = {}
+        real_dump = json.dump
+
+        def spy_dump(obj, f, *a, **k):
+            if isinstance(obj, dict) and "shared_memory" in obj:
+                captured["state"] = json.loads(
+                    json.dumps(obj, ensure_ascii=False))
+            return real_dump(obj, f, *a, **k)
+
+        bash = m.MagicMock(return_value="--- УСПЕХ: ok")
+        stub = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T",
+        })
+        P = [
+            m.patch.object(jc, "_http_post", return_value=stub),
+            m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+            m.patch.object(jc, "execute_bash", bash),
+            m.patch.object(jc, "_forbidden_bash_token", return_value=False),
+            m.patch("builtins.open", m.mock_open(read_data=dummy)),
+            m.patch("os.path.exists", return_value=True),
+            m.patch("os.makedirs"), m.patch("os.replace"),
+            m.patch.object(json, "dump", side_effect=spy_dump),
+        ]
+        if disable_thought:
+            P.append(m.patch.object(jc, "THOUGHT_STATE_ENABLED", False))
+        if raise_apply:
+            P.append(m.patch.object(
+                jc, "apply_thought_delta", side_effect=RuntimeError("boom")))
+        with contextlib.ExitStack() as st:
+            for p in P:
+                st.enter_context(p)
+            try:
+                jc.conduct(user)
+            except Exception:
+                pass
+            sm = captured.get("state", {}).get("shared_memory", [])
+            return sm, bash.call_count
+
+    # 1. Partial admission leak — atomic rejection
+    def test_partial_admission_is_atomic(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        # admitted open (verbatim) + rejected claim → whole delta poisoned
+        d = self._delta(
+            claim="фохат гептархия недоказуемый статус corrupted",
+            open="спроектируй новую память",
+            reason="semantic_claim,semantic_open")
+        res = apply_thought_delta(
+            ts, d, user_text="спроектируй новую память", bash_facts="")
+        self.assertTrue(res["lens_fully_rejected"])
+        self.assertEqual(ts["claims"], [])
+        self.assertEqual(ts["open"], [])
+        self.assertIsNone(d["claim"])
+        self.assertIsNone(d["open"])
+
+    # 2. Fail closed — ThoughtState disabled / delta exception → withheld
+    def test_fail_closed_thought_disabled(self):
+        sm, _ = self._run_conduct(
+            "задача проверка", "Monada-Hardcore применяет гептархию фохата.",
+            disable_thought=True)
+        self.assertFalse(any("гептарх" in str(x) for x in sm))
+
+    def test_fail_closed_delta_exception(self):
+        sm, _ = self._run_conduct(
+            "задача проверка", "Monada-Hardcore применяет гептархию фохата.",
+            raise_apply=True)
+        self.assertFalse(any("гептарх" in str(x) for x in sm))
+
+    # 3. Unauthorized action-only → fully rejected, no persistence
+    def test_unauthorized_action_only_fully_rejected(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        d = self._delta(action="bash", reason="semantic_claim")
+        res = apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertTrue(res["lens_fully_rejected"])
+        self.assertEqual(d["action"], "none")
+
+    # 4. Positive metric suppression across all metrics
+    def test_all_positive_metrics_suppressed_on_rejection(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        before = dict(ts["metrics"])
+        d = self._delta(
+            claim="фохат гептархия corrupted недоказуемо",
+            metric_delta={"confidence": 0.3, "coherence": 0.3,
+                          "grounding": 0.3, "novelty": 0.3},
+            reason="approved,semantic_claim")
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        for k in ("confidence", "coherence", "grounding", "novelty"):
+            self.assertLessEqual(
+                ts["metrics"][k], before[k],
+                f"{k} must not rise from rejected lens delta")
+
+    # 5. Predicate-local polarity (mixed clauses)
+    def test_predicate_local_polarity_rejected(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertFalse(_lens_corroborated(
+            "память стабильна, порт не активен",
+            "память не стабильна, порт активен", ""))
+
+    # 6. BASH_FACTS unsupported predicates
+    def test_bash_unsupported_predicates_rejected(self):
+        from core.janus_conductor import _lens_corroborated
+        self.assertFalse(_lens_corroborated(
+            "memory system corrupted", "", "memory system checked"))
+        self.assertFalse(_lens_corroborated(
+            "memory system encrypted", "", "memory system checked"))
+
+    # 7. Rejected artifact produces no constraint / lesson / archetype / glyph
+    def test_rejected_artifact_no_reflective_chain(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()  # design (reflective) mode
+        before = (list(ts.get("lessons", [])), list(ts.get("archetypes", [])),
+                  list(ts.get("glyphs", [])))
+        d = self._delta(
+            claim="недоказуемый тезис corrupted",
+            constraint="outward action blocked by introspection",
+            open="недостаточно данных о фохате",
+            reason="semantic_claim,outward_blocked,semantic_open")
+        apply_thought_delta(ts, d, user_text="кто ты?", bash_facts="")
+        self.assertEqual(ts["constraints"], [])
+        self.assertEqual(
+            (ts.get("lessons", []), ts.get("archetypes", []),
+             ts.get("glyphs", [])), before)
+
+    # 8. Conduct-level: rejected absent from shared_memory / new_artifacts
+    def test_conduct_rejected_absent(self):
+        sm, _ = self._run_conduct(
+            "тестовая задача проверка",
+            "Monada-Hardcore применяет гептархию для калибровки фохата.")
+        self.assertFalse(any("гептарх" in str(x) for x in sm))
+
+    # 9-11. Invariants
+    def test_fohat_janus_v48_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+        jsrc = inspect.getsource(jc.janus_dyad)
+        self.assertNotIn("_lens_corroborated", jsrc)
+        self.assertNotIn("lens_fully_rejected", jsrc)
+        self.assertTrue(hasattr(jc, "_is_equivalent_open_question"))
+
+    def test_conduct_fail_closed_wiring(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_td_result is None", src)
+        self.assertIn("lens_fully_rejected", src)
+
+
+class TestV49FAdmissionBeforeBash(unittest.TestCase):
+    """v49-F: admission предшествует execute_bash / proposal / BASH_FACTS."""
+
+    def _run_conduct(self, user, artifact, disable_thought=False,
+                     raise_apply=False):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        captured = {}
+        real_dump = json.dump
+
+        def spy_dump(obj, f, *a, **k):
+            if isinstance(obj, dict) and "shared_memory" in obj:
+                captured["state"] = json.loads(
+                    json.dumps(obj, ensure_ascii=False))
+            return real_dump(obj, f, *a, **k)
+
+        bash = m.MagicMock(return_value="--- УСПЕХ: ok")
+        stub = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T",
+        })
+        P = [
+            m.patch.object(jc, "_http_post", return_value=stub),
+            m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+            m.patch.object(jc, "execute_bash", bash),
+            m.patch.object(jc, "_forbidden_bash_token", return_value=False),
+            m.patch("builtins.open", m.mock_open(read_data=dummy)),
+            m.patch("os.path.exists", return_value=True),
+            m.patch("os.makedirs"), m.patch("os.replace"),
+            m.patch.object(json, "dump", side_effect=spy_dump),
+        ]
+        if disable_thought:
+            P.append(m.patch.object(jc, "THOUGHT_STATE_ENABLED", False))
+        if raise_apply:
+            P.append(m.patch.object(
+                jc, "apply_thought_delta", side_effect=RuntimeError("boom")))
+        with contextlib.ExitStack() as st:
+            for p in P:
+                st.enter_context(p)
+            try:
+                jc.conduct(user)
+            except Exception:
+                pass
+            sm = captured.get("state", {}).get("shared_memory", [])
+            return sm, bash.call_count
+
+    # rejected lens artifact: uncorroborated claim (anchor + unsupported status)
+    # plus a bash block → admission must reject and block bash.
+    _BASH_ART = (
+        "Monada-Hardcore система повреждена corrupted гептархия.\n"
+        "```bash\nss -tlnp\n```"
+    )
+
+    def test_rejected_lens_no_bash_no_proposal(self):
+        sm, calls = self._run_conduct(
+            "выполни диагностику ss -tlnp память",  # exec-authorized phrasing
+            self._BASH_ART)
+        # admission rejects the (uncorroborated) artifact → bash never runs,
+        # no proposal/BASH_FACTS/record persisted.
+        self.assertEqual(calls, 0)
+        self.assertFalse(any("ПРОЕКТ ДЕЙСТВИЯ" in str(x) for x in sm))
+        self.assertFalse(any("гептарх" in str(x).lower() for x in sm))
+
+    def test_fail_closed_thought_disabled_no_bash(self):
+        sm, calls = self._run_conduct(
+            "выполни диагностику ss -tlnp память", self._BASH_ART,
+            disable_thought=True)
+        self.assertEqual(calls, 0)
+        self.assertFalse(any("ПРОЕКТ ДЕЙСТВИЯ" in str(x) for x in sm))
+
+    def test_fail_closed_apply_raises_no_bash(self):
+        sm, calls = self._run_conduct(
+            "выполни диагностику ss -tlnp память", self._BASH_ART,
+            raise_apply=True)
+        self.assertEqual(calls, 0)
+        self.assertFalse(any("ПРОЕКТ ДЕЙСТВИЯ" in str(x) for x in sm))
+
+    def test_conduct_wiring_admission_before_bash(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        # the lens pre-admission block and the bash-block guard exist
+        self.assertIn("_lens_block_bash", src)
+        self.assertIn("bash withheld pre-admission", src)
+        # post-bash delta now excludes lens Devas
+        self.assertIn("_thought_state is not None and not _is_lens_deva", src)
+        # admission block precedes the bash if/elif chain textually
+        self.assertLess(
+            src.index("_lens_block_bash = "),
+            src.index('"```bash" in artifact or _is_safe_body_raw_bash'))
+
+    def test_fohat_and_janus_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+        self.assertNotIn(
+            "_lens_block_bash", inspect.getsource(jc.janus_dyad))
+
+
+class TestV49FVisibility(unittest.TestCase):
+    """v49-F visibility: rejected lens action must not reach Janus input,
+    BASH_FACTS, or WARM/CRYSTAL. Strict helper does NOT swallow exceptions."""
+
+    # rejected lens artifact: anchor claim + unsupported status + bash block
+    _REJECTED = (
+        "Monada-Hardcore система повреждена corrupted.\n"
+        "```bash\nss -tlnp\n```"
+    )
+
+    def _capture_conduct(self, user, artifact, deva_side_effect=None):
+        """Runs conduct under capture WITHOUT swallowing exceptions.
+
+        Returns a namespace with: janus (spy), bash (mock), crystal (mock),
+        written (all file-write text). Any conduct exception propagates.
+        """
+        import json, sys, types, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+
+        stub = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T",
+        })
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        bash = m.MagicMock(return_value="--- УСПЕХ: ok")
+        handle = m.mock_open(read_data=dummy)
+        crystal = m.MagicMock()
+        side = deva_side_effect or (lambda **kw: artifact)
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=side),
+                m.patch.object(jc, "execute_bash", bash),
+                m.patch.object(jc, "_forbidden_bash_token", return_value=False),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.dict(sys.modules, {"dancefloor_save": crystal}),
+                m.patch("builtins.open", handle),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"),
+                m.patch("os.replace"),
+            ):
+                st.enter_context(p)
+            # NO try/except: an unexpected conduct exception fails the test.
+            jc.conduct(user)
+            written = "".join(
+                str(c.args[0]) for c in handle().write.call_args_list if c.args
+            )
+            ns = types.SimpleNamespace(
+                janus=janus, bash=bash, crystal=crystal, written=written)
+            return ns
+
+    # 1. Janus input excludes rejected lens action/proposal
+    def test_janus_input_excludes_rejected(self):
+        ns = self._capture_conduct(
+            "выполни диагностику ss -tlnp память", self._REJECTED)
+        self.assertTrue(ns.janus.called)
+        triad = ns.janus.call_args.kwargs.get("triad_artifacts", "")
+        self.assertNotIn("corrupted", triad)
+        self.assertNotIn("ПРОЕКТ ДЕЙСТВИЯ", triad)
+
+    # 2. BASH_FACTS not appended for rejected lens action
+    def test_bash_facts_not_appended_for_rejected(self):
+        ns = self._capture_conduct(
+            "выполни диагностику ss -tlnp память", self._REJECTED)
+        bash_facts = ns.janus.call_args.kwargs.get("bash_facts", "")
+        self.assertEqual(ns.bash.call_count, 0)        # bash never executed
+        self.assertNotIn("ss -tlnp", bash_facts)
+        self.assertNotIn("УСПЕХ", bash_facts)
+
+    # 3. WARM/CRYSTAL write/compaction path not reached by rejected action
+    def test_warm_crystal_not_written_for_rejected(self):
+        ns = self._capture_conduct(
+            "выполни диагностику ss -tlnp память", self._REJECTED)
+        self.assertFalse(ns.crystal.main.called)        # no CRYSTAL save
+        self.assertNotIn("corrupted", ns.written)       # nothing persisted
+        self.assertNotIn("ПРОЕКТ ДЕЙСТВИЯ", ns.written)
+
+    # 4. Helper fails on unexpected exceptions instead of swallowing
+    def test_helper_does_not_swallow_unexpected(self):
+        def _boom(**kw):
+            raise RuntimeError("unexpected deva failure")
+        with self.assertRaises(RuntimeError):
+            self._capture_conduct(
+                "задача", self._REJECTED, deva_side_effect=_boom)
 
 
 if __name__ == "__main__":

@@ -196,6 +196,160 @@ FOHAT_CHAIN: list[tuple[str, str, str]] = [
     ("Head",  "Rahu",    "7-Дивергент"),
 ]
 
+# ── v49: MUSL — статический наблюдательный алфавит и линзы внимания Дэвов ─────
+_MUSL_AUTHORITY_FLAGS = {
+    "scope": "observational_only",
+    "may_create_truth": False,
+    "may_create_memory": False,
+    "may_create_action": False,
+    "may_create_identity": False,
+}
+MUSL_OPERATOR_REGISTRY = {
+    "RESOURCE":    {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "FORCE":       {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "BOUNDARY":    {"kind": "relation", **_MUSL_AUTHORITY_FLAGS},
+    "INFORMATION": {"kind": "marker",   **_MUSL_AUTHORITY_FLAGS},
+    "PROCESS":     {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "INSIGHT":     {"kind": "marker",   **_MUSL_AUTHORITY_FLAGS},
+    "EXCHANGE":    {"kind": "relation", **_MUSL_AUTHORITY_FLAGS},
+    "HARMONY":     {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "DISRUPTION":  {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "LIMIT":       {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "FREEZE":      {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "CYCLE":       {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "TRANSFORM":   {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "ENTROPY":     {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "PROTECT":     {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "INTEGRITY":   {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "GOAL":        {"kind": "marker",   **_MUSL_AUTHORITY_FLAGS},
+    "GROWTH":      {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "LINK":        {"kind": "relation", **_MUSL_AUTHORITY_FLAGS},
+    "SELF":        {"kind": "marker",   **_MUSL_AUTHORITY_FLAGS},
+    "FLOW":        {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "POTENTIAL":   {"kind": "state",    **_MUSL_AUTHORITY_FLAGS},
+    "EMERGENCE":   {"kind": "process",  **_MUSL_AUTHORITY_FLAGS},
+    "MEMORY":      {"kind": "marker",   **_MUSL_AUTHORITY_FLAGS},
+}
+
+# Вес задаёт только порядок акцентов в локальной формулировке. Он не участвует
+# в маршрутизации, метриках, состоянии, авторизации или persistence.
+DEVA_MUSL_LENSES = {
+    "Shani":   (("LIMIT", 1.0), ("BOUNDARY", 0.8), ("INTEGRITY", 0.6)),
+    "Chandra": (("HARMONY", 1.0), ("DISRUPTION", 0.8), ("FLOW", 0.6)),
+    "Shukra":  (("HARMONY", 1.0), ("EXCHANGE", 0.8), ("INSIGHT", 0.6)),
+    "Mangala": (("FORCE", 1.0), ("PROCESS", 0.8), ("GOAL", 0.6)),
+    "Budha":   (("INFORMATION", 1.0), ("LINK", 0.8), ("TRANSFORM", 0.6)),
+    "Rahu":    (("POTENTIAL", 1.0), ("DISRUPTION", 0.8), ("EMERGENCE", 0.6)),
+    "Ketu":    (("LIMIT", 1.0), ("FREEZE", 0.8), ("ENTROPY", 0.6)),
+    "Surya":   (("GOAL", 1.0), ("INTEGRITY", 0.8), ("RESOURCE", 0.6)),
+}
+_MUSL_LENS_MAX_CHARS = 160
+_MUSL_LENS_ECHO_MARKERS = (
+    "musl_lens",
+    "musl",
+    "observational_only",
+    "may_create_truth",
+    "may_create_memory",
+    "may_create_action",
+    "may_create_identity",
+)
+
+
+def _get_deva_musl_lens(deva_name) -> str:
+    """Возвращает bounded observational-only линзу; неизвестная Дэва → пусто."""
+    weighted = DEVA_MUSL_LENSES.get(str(deva_name or "").strip())
+    if not weighted:
+        return ""
+    focus = ",".join(
+        operator for operator, _weight in weighted
+        if operator in MUSL_OPERATOR_REGISTRY
+    )
+    if not focus:
+        return ""
+    return (
+        f"[MUSL_LENS] focus={focus}; observational_only; no authority"
+    )[:_MUSL_LENS_MAX_CHARS]
+
+
+def _inject_deva_musl_lens(node_shared_ctx: str, deva_name) -> str:
+    """Добавляет линзу только в локальный контекст одного вызова Дэвы."""
+    lens = _get_deva_musl_lens(deva_name)
+    return f"{node_shared_ctx}\n{lens}" if lens else node_shared_ctx
+
+
+# v49-B/C/D: следы MUSL-синтаксиса в артефакте.
+# По умолчанию (не-lens) — строго UPPERCASE-реестр: обычный текст, shell-команды,
+# lowercase прозы не трогаются. Для lens-conditioned артефакта (case_insensitive)
+# дополнительно вычищаются lowercase/mixed-case композиции (v49-D, требование 6).
+_MUSL_OPERATOR_NAMES = frozenset(MUSL_OPERATOR_REGISTRY.keys())
+_MUSL_OP_ALT = "|".join(sorted(_MUSL_OPERATOR_NAMES))
+# Вложенные скобочные композиции: PROTECT(BOUNDARY), TRANSFORM(FLOW(PROTECT))
+_MUSL_OPERATOR_COMPOSITION_RE = re.compile(
+    r"\b(?:%s)\s*\([A-Z_,()\s]*\)" % _MUSL_OP_ALT
+)
+_MUSL_OPERATOR_COMPOSITION_CI_RE = re.compile(
+    r"\b(?:%s)\s*\([A-Za-z_,()\s]*\)" % _MUSL_OP_ALT, re.IGNORECASE
+)
+# Стрелочные композиции: PROTECT -> BOUNDARY, PROTECT → BOUNDARY
+_MUSL_ARROW_RE = re.compile(
+    r"\b(?:%s)\s*(?:->|→)\s*(?:%s)\b" % (_MUSL_OP_ALT, _MUSL_OP_ALT)
+)
+_MUSL_ARROW_CI_RE = re.compile(
+    r"\b(?:%s)\s*(?:->|→)\s*(?:%s)\b" % (_MUSL_OP_ALT, _MUSL_OP_ALT),
+    re.IGNORECASE,
+)
+# Маркеры строки — пробельные варианты [ MUSL_LENS ], musl_lens, observational_only
+_MUSL_LENS_LINE_RE = re.compile(
+    r"\[\s*musl[_\s]*lens\s*\]|musl_lens|\bobservational_only\b",
+    re.IGNORECASE,
+)
+_MUSL_TOKEN_RE = re.compile(
+    r"\[\s*musl[_\s]*lens\s*\]|\bmusl_lens\b|\bmusl\b", re.IGNORECASE,
+)
+
+
+def _is_lens_operator_line(line: str, *, case_insensitive: bool = False) -> bool:
+    """True — строка почти целиком состоит из операторов MUSL реестра (линза, не проза).
+
+    Требует ≥2 токенов, ≥75% из них операторы реестра, и почти нет остаточной
+    буквенно-цифровой прозы (< 5 символов после удаления операторов и пунктуации).
+    Это исключает строки вида 'Анализ показывает PROTECT(BOUNDARY)' — в них прозы много.
+    case_insensitive=True (только для lens-артефактов) ловит lowercase/mixed списки.
+    """
+    pat = r"\b[A-Za-z_]{3,}\b" if case_insensitive else r"\b[A-Z_]{3,}\b"
+    tokens = re.findall(pat, line)
+    if len(tokens) < 2:
+        return False
+    norm = [t.upper() for t in tokens]
+    if len([t for t in norm if t in _MUSL_OPERATOR_NAMES]) / len(norm) < 0.75:
+        return False
+    residual = re.sub(pat, "", line)
+    residual = re.sub(r"[^a-zа-яё0-9]", "", residual.lower())
+    return len(residual) < 5
+
+
+def _strip_musl_lens_echo(text: str, *, case_insensitive: bool = False) -> str:
+    """Удаляет процитированную линзу и MUSL-синтаксис из артефакта до памяти и синтеза.
+
+    v49-C: пробельные маркеры [ MUSL_LENS ], стрелки PROTECT → BOUNDARY, строки
+    из чистых операторов реестра.
+    v49-D: case_insensitive=True — для lens-артефактов дополнительно вычищает
+    lowercase/mixed-case композиции (protect(boundary), flow -> protect).
+    Для не-lens артефактов lowercase-проза НЕ трогается (требование 6).
+    """
+    comp_re  = _MUSL_OPERATOR_COMPOSITION_CI_RE if case_insensitive else _MUSL_OPERATOR_COMPOSITION_RE
+    arrow_re = _MUSL_ARROW_CI_RE if case_insensitive else _MUSL_ARROW_RE
+    kept = "\n".join(
+        line for line in str(text or "").splitlines()
+        if not _MUSL_LENS_LINE_RE.search(line)
+        and not _is_lens_operator_line(line, case_insensitive=case_insensitive)
+    )
+    kept = comp_re.sub("", kept)
+    kept = arrow_re.sub("", kept)
+    kept = _MUSL_TOKEN_RE.sub("", kept)
+    return re.sub(r"[ \t]{2,}", " ", kept).strip()
+
+
 # ── 9 мини-промптов: 3 центра × 3 лица ───────────────────────────────────────
 # Каждая нота Октавы — благоприятная среда для одного архетипа.
 # Текущая нота определяет, какое лицо центра активно.
@@ -1823,7 +1977,9 @@ def _new_evidence_ledger() -> dict:
     return {"confirmed": 0, "refuted": 0, "unverified": 0, "contradiction": 0}
 
 
-def _update_evidence_from_delta(evidence: dict, delta: dict) -> None:
+def _update_evidence_from_delta(
+    evidence: dict, delta: dict, *, open_added: bool = True,
+) -> None:
     """Инкрементирует счётчики по маркерам дельты. APPROVED не считается confirmed."""
     reasons = set(str(delta.get("reason", "")).split(","))
     open_q  = str(delta.get("open") or "").lower()
@@ -1831,11 +1987,11 @@ def _update_evidence_from_delta(evidence: dict, delta: dict) -> None:
         evidence["confirmed"] += 1
     if "bash_failure" in reasons:
         evidence["refuted"] += 1
-    if (
-        "pain" in reasons
-        or "недостаточно данных" in open_q
+    marker_doubt = (
+        "недостаточно данных" in open_q
         or "нет подтверждения" in open_q
-    ):
+    )
+    if "pain" in reasons or "refusal" in reasons or (marker_doubt and open_added):
         evidence["unverified"] += 1
     if delta.get("contradiction"):
         evidence["contradiction"] += 1
@@ -1955,6 +2111,7 @@ _ECHO_NOISE_MARKERS = (
     "grounding=", "пиши «боль", "план_януса", "твоя_микрозадача",
     "shared_experience", "интро_гипотеза",
     "glyph_pressure", "[glyph_pressure]",
+    *_MUSL_LENS_ECHO_MARKERS,
 )
 _CLAIM_SHELL_RE = re.compile(
     r"```|\$\s|/home/|/mnt/|/etc/|\.sh\b|\.py\b|\bbash\b|скрипт|script"
@@ -1999,6 +2156,42 @@ def _is_near_duplicate_thought(candidate, existing: list) -> bool:
         if cand == norm:
             return True
         if len(cand) > 80 and len(norm) > 80 and cand[:80] == norm[:80]:
+            return True
+    return False
+
+
+# ── v48: Question Collapse — эквивалентные сомнения занимают один open-slot ──
+_QUESTION_DOUBT_PREFIX_RE = re.compile(
+    r"\b(?:боль|недостаточно\s+данных|нет\s+подтверждения|"
+    r"неясно|неизвестно|требуется\s+уточнить|нужно\s+уточнить)\b",
+    re.IGNORECASE,
+)
+
+
+def _question_signature(text: str) -> set[str]:
+    """Сигнатура содержания сомнения без общей формулы неопределённости."""
+    cleaned = _QUESTION_DOUBT_PREFIX_RE.sub(" ", str(text or ""))
+    return _claim_signature(cleaned)
+
+
+def _is_equivalent_open_question(candidate, existing: list) -> bool:
+    """Точный дубль или детерминированно эквивалентное сомнение.
+
+    Contradiction-записи намеренно остаются на старом exact/prefix дедупе.
+    """
+    if _is_near_duplicate_thought(candidate, existing):
+        return True
+    if _norm_thought_text(candidate).startswith("contradiction:"):
+        return False
+    cand_sig = _question_signature(candidate)
+    if not cand_sig:
+        return False
+    for item in existing:
+        if _norm_thought_text(item).startswith("contradiction:"):
+            continue
+        prior_sig = _question_signature(item)
+        union = cand_sig | prior_sig
+        if union and len(cand_sig & prior_sig) / len(union) >= 0.60:
             return True
     return False
 
@@ -2090,6 +2283,174 @@ def _is_semantically_novel_claim(
 ) -> bool:
     """True — claim несёт НОВЫЙ СМЫСЛ, а не новую формулировку старого."""
     return _claim_novelty_score(candidate, existing_claims) >= threshold
+
+
+# ── v49-B: карантин MUSL-линзы — корроборация против не-MUSL источников ──────
+# Выделенный порог: НЕ переиспользует THOUGHT_CLAIM_NOVELTY_THRESHOLD —
+# новизна и корроборация настраиваются независимо.
+MUSL_LENS_CORROBORATION_THRESHOLD = 0.42
+# v49-C: явное исполнение — глагол + исполнительный объект одновременно.
+# Одного слова "bash" или "команд" недостаточно.
+_LENS_EXEC_VERBS = (
+    "запусти", "запустить", "выполни", "выполнить",
+    "сделай проверку", "исполни", "исполнить",
+    "run ", "execute",
+)
+_LENS_EXEC_OBJECTS = (
+    "bash", "команду", "команд", "скрипт", "script",
+    "через терминал", "this command", "the command", "диагностик",
+)
+
+
+def _lens_source_stems(text: str) -> set[str]:
+    """Стем-множество источника корроборации (user text / BASH_FACTS).
+
+    Без капа _CLAIM_SIG_MAX_TOKENS: источник длинный, усечение сломало бы
+    проверку опоры. Tact-local, нигде не хранится.
+    """
+    t = str(text or "").lower().replace("ё", "е")
+    stems: set[str] = set()
+    for tok in re.findall(r"[a-zа-я0-9]+", t):
+        if len(tok) <= 2 or tok in _CLAIM_SIG_STOPWORDS:
+            continue
+        tok = _claim_stem(tok)
+        if tok not in _CLAIM_SIG_STOP_STEMS:
+            stems.add(tok)
+    return stems
+
+
+# v49-D/E: статус/полярность-предикаты — слова, несущие УТВЕРЖДЕНИЕ о состоянии.
+# Линза не может ввести статус/предикат, которого нет в источнике (треб. 5/7).
+_LENS_STATUS_WORDS = (
+    "stable", "unstable", "active", "inactive", "up", "down", "running",
+    "stopped", "listen", "listening", "open", "closed", "failed", "success",
+    "successful", "ok", "confirmed", "verified", "broken", "healthy", "ready",
+    "available", "unavailable", "online", "offline", "passed", "blocked",
+    "enabled", "disabled",
+    # v49-E: предикаты изменения состояния (треб. 7)
+    "corrupt", "corrupted", "encrypted", "deleted", "modified", "changed",
+    "damaged", "lost", "missing", "full", "empty", "leaking", "overflow",
+    "crashed", "hung", "frozen", "restarted", "reset", "purged",
+    "стабильн", "нестабильн", "активн", "неактивн", "работает", "работа",
+    "останов", "слушает", "слуша", "открыт", "закрыт", "сбой", "успех",
+    "подтвержд", "проверен", "сломан", "здоров", "готов", "доступен",
+    "доступ", "недоступ", "онлайн", "офлайн", "запущен", "включен",
+    "выключен", "блокирован",
+    "повреждён", "повреждена", "повреждено", "зашифрован", "удалён",
+    "удалена", "изменён", "изменена", "утрачен", "переполнен", "пуст",
+    "заполнен", "упал", "завис", "перезапущен", "очищен",
+)
+_LENS_STATUS_STEMS = frozenset(_claim_stem(w) for w in _LENS_STATUS_WORDS)
+_LENS_NEG_WORDS = frozenset((
+    "не", "нет", "ни", "без", "невозможно", "нельзя",
+    "not", "no", "never", "none", "without",
+))
+# Маркеры отрицания — слово-границы, чтобы не ловить 'неделя' и т.п.
+_LENS_NEGATION_RE = re.compile(
+    r"\b(?:не|нет|ни|без|невозможно|нельзя|not|no|never|none|without)\b|n't",
+    re.IGNORECASE,
+)
+# Разделители клауз для предикат-локальной полярности (треб. 6).
+_LENS_CLAUSE_SPLIT_RE = re.compile(r"[,;.]|\bи\b|\band\b|\bа\b|\bbut\b|\bно\b")
+
+
+def _lens_has_negation(text) -> bool:
+    """True — текст содержит маркер отрицания (детерминированно, по словам)."""
+    return bool(_LENS_NEGATION_RE.search(str(text or "").lower().replace("ё", "е")))
+
+
+def _lens_status_polarity(text) -> dict[str, set]:
+    """{стем-статуса → набор полярностей (True=отрицание в его клаузе)}.
+
+    Предикат-локально (треб. 6): отрицание привязано к КЛАУЗЕ статус-слова,
+    а не ко всему тексту. 'память не стабильна, порт активен' →
+    {стабильн:{True}, активн:{False}}. Детерминированно, без LLM.
+    """
+    t = str(text or "").lower().replace("ё", "е")
+    out: dict[str, set] = {}
+    for clause in _LENS_CLAUSE_SPLIT_RE.split(t):
+        toks = re.findall(r"[a-zа-я0-9']+", clause)
+        neg = any((tok in _LENS_NEG_WORDS or "n't" in tok) for tok in toks)
+        for tok in toks:
+            st = _claim_stem(tok)
+            if st in _LENS_STATUS_STEMS:
+                out.setdefault(st, set()).add(neg)
+    return out
+
+
+def _lens_status_supported(text, source) -> bool:
+    """True — каждый статус-предикат кандидата присутствует в источнике с той же
+    полярностью (треб. 6/7). Отсутствующий предикат или иная полярность → False.
+    """
+    cand_pol = _lens_status_polarity(text)
+    if not cand_pol:
+        return True                       # нет статус-предикатов — нечего проверять
+    src_pol = _lens_status_polarity(source)
+    for st, pols in cand_pol.items():
+        if st not in src_pol:
+            return False                  # предикат отсутствует в источнике
+        if not (pols <= src_pol[st]):
+            return False                  # полярность не подтверждена
+    return True
+
+
+def _lens_corroborated(text, user_text: str = "", bash_facts: str = "") -> bool:
+    """True — кандидат независимо опирается на BASH_FACTS или точно повторяет user text.
+
+    v49-C/D/E: режимы с предикат-локальной полярностью и поддержкой предиката:
+    - BASH_FACTS: overlap ≥ threshold И каждый статус-предикат кандидата явно
+      присутствует в фактах с той же полярностью (треб. 7: 'memory system
+      corrupted'/'encrypted' при фактах 'memory system checked' → отклонены).
+    - user_text: строгое включение стемов И предикат-локальная полярность И
+      глобальная чётность отрицания (треб. 6: 'память стабильна, порт не активен'
+      при 'память не стабильна, порт активен' → отклонён).
+
+    Детерминированно, без LLM/embeddings. Пустой кандидат/источник → False.
+    """
+    cand_sig = _claim_signature(str(text or ""))
+    if not cand_sig:
+        return False
+    cand_neg = _lens_has_negation(text)
+
+    if bash_facts:
+        bash_stems = _lens_source_stems(bash_facts)
+        if bash_stems:
+            overlap_ok = (
+                len(cand_sig & bash_stems) / len(cand_sig)
+                >= MUSL_LENS_CORROBORATION_THRESHOLD
+            )
+            if (
+                overlap_ok
+                and _lens_status_supported(text, bash_facts)
+                and cand_neg == _lens_has_negation(bash_facts)
+            ):
+                return True
+
+    if user_text:
+        user_stems = _lens_source_stems(user_text)
+        if (
+            user_stems
+            and cand_sig <= user_stems
+            and _lens_status_supported(text, user_text)
+            and cand_neg == _lens_has_negation(user_text)
+        ):
+            return True
+    return False
+
+
+def _lens_execution_authorized(user_text: str) -> bool:
+    """True — пользователь явно запрашивает исполнение (глагол + объект).
+
+    BASH_FACTS не принимаются: реальный исход исполнения приходит через
+    bash_success/bash_failure reasons, а не через явный user-запрос.
+    Упоминание bash/команды без императива недостаточно:
+      'расскажи про bash' → False
+      'выполни bash-команду' → True
+    """
+    low = str(user_text or "").lower()
+    has_verb = any(v in low for v in _LENS_EXEC_VERBS)
+    has_obj  = any(o in low for o in _LENS_EXEC_OBJECTS)
+    return has_verb and has_obj
 
 
 def _extract_semantic_claim(
@@ -2209,6 +2570,7 @@ def compute_thought_delta(
     diagnostic_authorized: bool = True,
     pre_janus_frame: dict | None = None,
     thought_state: dict | None = None,
+    lens_conditioned: bool = False,
 ) -> dict:
     """ThoughtDelta — детерминированное преобразование мысли Дэвом.
 
@@ -2304,6 +2666,8 @@ def compute_thought_delta(
         "contradiction": contradiction,
         "metric_delta": md,
         "reason":     ",".join(reasons) or "neutral",
+        # v49-B: транзиентный провенанс — НЕ попадает в _compact_delta/trace
+        "lens_conditioned": bool(lens_conditioned),
     }
 
 
@@ -2361,6 +2725,7 @@ def _extract_lesson_candidate(
     *,
     claim_added: bool = False,
     claim_novelty: float | None = None,
+    open_added: bool = True,
 ) -> str | None:
     """LessonCandidate из дельты такта. Детерминированно, первый матч."""
     frame = pre_janus_frame if isinstance(pre_janus_frame, dict) else {}
@@ -2374,7 +2739,9 @@ def _extract_lesson_candidate(
 
     if mode in _REFLECTIVE_MODES and "outward action blocked" in constraint:
         return _LESSON_REFLECTIVE
-    if "недостаточно данных" in open_q or "нет подтверждения" in open_q:
+    if open_added and (
+        "недостаточно данных" in open_q or "нет подтверждения" in open_q
+    ):
         return _LESSON_UNVERIFIED
     if delta.get("contradiction"):
         return _LESSON_CONTRADICTION
@@ -2604,7 +2971,13 @@ def _add_lesson(thought_state: dict, lesson) -> bool:
     return True
 
 
-def apply_thought_delta(thought_state: dict, delta: dict) -> None:
+def apply_thought_delta(
+    thought_state: dict,
+    delta: dict,
+    *,
+    user_text: str = "",
+    bash_facts: str = "",
+) -> dict:
     """Применяет ThoughtDelta: метрики клампятся в [0,1], списки ограничены.
 
     v40.1: дедуп (точный + префикс >80 симв.), contradiction → open с
@@ -2614,8 +2987,68 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     имеющегося смысла не добавляется и не получает награды метрик.
     v41: после применения дельты извлекается LessonCandidate (детерминированно);
     добавленный урок даёт coherence +0.03, novelty +0.03.
+    v49-B: lens_conditioned-дельта проходит карантин — некорроборированные
+    claim/open/contradiction обнуляются ПРЯМО В delta (in-place: ledger и
+    trace ниже по потоку видят уже очищенные поля). bash_success/bash_failure
+    и pain — реальные сигналы исполнения/отказа, карантину не подлежат.
     trace — append-only внутри такта, max THOUGHT_MAX_TRACE записей.
     """
+    # ── v49-E: карантин MUSL-линзы — АТОМАРНЫЙ fail-closed admission ──────────────
+    # Линза-артефакт атомарен для персистенции: если ОТКЛОНЕНО ХОТЯ БЫ ОДНО
+    # семантическое/action-поле, вся дельта «отравляется» — все семантические
+    # поля обнуляются, ВСЕ положительные метрики подавляются, сырой артефакт
+    # не персистится (conduct по lens_fully_rejected). Цепочка constraint→lesson→
+    # archetype→glyph не запускается, т.к. поля пусты. action входит в учёт:
+    # отклонённый action="bash" делает артефакт полностью отклонённым (треб. 3).
+    _lens_fully_rejected = False
+    if delta.get("lens_conditioned"):
+        _lens_reasons = set(str(delta.get("reason", "")).split(","))
+
+        # Детекция отклонения каждого поля БЕЗ мутации (сначала решаем, потом травим).
+        _claim_rej = bool(delta.get("claim")) and (
+            "bash_success" not in _lens_reasons
+            and not _lens_corroborated(delta["claim"], user_text, bash_facts)
+        )
+        _open_rej = bool(delta.get("open")) and (
+            not (_lens_reasons & {"bash_failure", "pain"})
+            and not _lens_corroborated(delta["open"], user_text, bash_facts)
+        )
+        _contra_rej = bool(delta.get("contradiction")) and (
+            not _lens_corroborated(delta["contradiction"], user_text, bash_facts)
+        )
+        _action_rej = str(delta.get("action") or "none") != "none" and (
+            not (_lens_reasons & {"bash_success", "bash_failure"})
+            and not _lens_execution_authorized(user_text)
+        )
+        # constraint: outward_blocked-байпас снят, если claim/action отклонены.
+        _constraint_bypass = (
+            "outward_blocked" in _lens_reasons
+            and not (_claim_rej or _action_rej)
+        )
+        _constraint_rej = bool(delta.get("constraint")) and (
+            not _constraint_bypass
+            and not _lens_corroborated(delta["constraint"], user_text, bash_facts)
+        )
+
+        _lens_fully_rejected = bool(
+            _claim_rej or _open_rej or _contra_rej or _action_rej or _constraint_rej
+        )
+
+        if _lens_fully_rejected:
+            # Атомарный fail-closed: обнулить ВСЕ семантические/action-поля и
+            # подавить ВСЕ положительные метрики. Негативы (код-safety/pain)
+            # сохраняются. Так не возникает ни state, ни reflective-цепочки.
+            delta["claim"] = None
+            delta["open"] = None
+            delta["contradiction"] = None
+            delta["constraint"] = None
+            delta["action"] = "none"
+            _md = {
+                k: (v if v < 0 else 0.0)
+                for k, v in (delta.get("metric_delta") or {}).items()
+            }
+            delta["metric_delta"] = _md
+
     metrics = thought_state["metrics"]
     refine = {"grounding": 0.0, "coherence": 0.0, "risk": 0.0,
               "novelty": 0.0, "confidence": 0.0}
@@ -2650,12 +3083,18 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     )
 
     open_q = delta.get("open")
+    open_collapsed = bool(
+        open_q
+        and _is_equivalent_open_question(open_q, thought_state["open"])
+    )
+    open_added = False
     if (
         open_q
         and len(thought_state["open"]) < THOUGHT_MAX_OPEN
-        and not _is_near_duplicate_thought(open_q, thought_state["open"])
+        and not open_collapsed
     ):
         thought_state["open"].append(str(open_q)[:THOUGHT_FIELD_MAXLEN])
+        open_added = True
         refine["risk"]       += 0.05
         refine["confidence"] -= 0.03
 
@@ -2687,6 +3126,8 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
         dv = (delta.get("metric_delta") or {}).get(key, 0.0)
         if _suppress_claim_reward and key in ("confidence", "coherence") and dv > 0:
             dv = 0.0
+        if open_collapsed and key in ("confidence", "coherence") and dv > 0:
+            dv = 0.0
         metrics[key] = round(_clamp01(metrics[key] + dv + refine[key]), 4)
     if len(thought_state["trace"]) < THOUGHT_MAX_TRACE:
         entry = _compact_delta(delta)
@@ -2703,7 +3144,9 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     _add_lesson(thought_state, _extract_lesson_candidate(
         thought_state, delta, thought_state.get("seed") or {},
         claim_added=claim_added, claim_novelty=claim_novelty,
+        open_added=open_added,
     ))
+    return {"open_added": open_added, "lens_fully_rejected": _lens_fully_rejected}
 
 
 def compact_thought_state(thought_state: dict) -> dict:
@@ -3500,6 +3943,11 @@ def conduct(raw_text: str) -> None:
     # ── v39.0: ThoughtSeed → ThoughtState (слой наблюдения, поведение не меняет) ──
     _thought_state: dict | None = None
     _evidence_ledger: dict | None = None   # v44: тактовый журнал заземлённости
+    # v49-B/C: тактовая пометка Дэв, получивших MUSL-линзу. Живёт только внутри
+    # такта; не персистится, в ThoughtState/WARM/CRYSTAL не попадает.
+    _lens_conditioned_devas: set[str] = set()
+    # Текст пользователя для lens-проверок в цикле Дэвов — вычисляется один раз.
+    _lens_user_text: str = str(_at.get("original") or raw_text or "")
     if THOUGHT_STATE_ENABLED:
         try:
             _thought_seed = make_thought_seed(
@@ -3719,6 +4167,13 @@ def conduct(raw_text: str) -> None:
                 )
             except Exception as _ts_ctx_err:
                 _sys_log(f"[THOUGHT] ctx inject failed: {_ts_ctx_err}")
+        # v49: фиксированная observational-only линза — только формулировка
+        # локального контекста текущей Дэвы, без записи в shared/state/Janus.
+        # v49-B: факт инъекции помечает Дэву как lens-conditioned для карантина.
+        _lensed_ctx = _inject_deva_musl_lens(node_shared_ctx, _d)
+        if _lensed_ctx != node_shared_ctx:
+            _lens_conditioned_devas.add(str(_d))
+        node_shared_ctx = _lensed_ctx
         _ctx_for_deva = (
             ((_mapped_obs + "\n") if _mapped_obs else "")
             + node_shared_ctx
@@ -3752,6 +4207,11 @@ def conduct(raw_text: str) -> None:
         artifact, repeats_collapsed = _collapse_repeated_paragraphs(artifact)
         if repeats_collapsed:
             _sys_log("ᛁ deva repeat collapsed")
+        # v49-D: для lens-conditioned Дэвы — case-insensitive стриппинг
+        # (lowercase/mixed-case композиции). Не-lens проза не трогается.
+        _is_lens_deva = str(_d) in _lens_conditioned_devas
+        artifact = _strip_musl_lens_echo(artifact, case_insensitive=_is_lens_deva)
+        _td_result = None   # admission результат ThoughtDelta (для отложенной персистенции)
 
         center = _c
         deva   = _d
@@ -3797,16 +4257,66 @@ def conduct(raw_text: str) -> None:
 
         # КУМУЛЯТИВНЫЙ КОНТЕКСТ: артефакт немедленно добавляется в shared_ctx
         # и shared_memory — следующий Дэва в цепочке видит выход предыдущего.
-        shared_ctx += f"\n{record}\n"
-        state.setdefault("shared_memory", []).append(record)
-        new_artifacts.append(record)
-        prev_artifact[center] = artifact_rec
+        # v49-D: для НЕ-lens Дэвы — немедленная персистенция (исходное поведение).
+        # Для lens Дэвы персистенция ОТЛОЖЕНА до admission после ThoughtDelta
+        # (требование 1: сырой артефакт не попадает в shared_memory/new_artifacts/
+        # Janus/HOT/WARM/CRYSTAL, пока линза не пропустит хотя бы одно state-поле).
+        if not _is_lens_deva:
+            shared_ctx += f"\n{record}\n"
+            state.setdefault("shared_memory", []).append(record)
+            new_artifacts.append(record)
+            prev_artifact[center] = artifact_rec
+            if center in _at.get("centers", {}):
+                _at["centers"][center]["done"]     = True
+                _at["centers"][center]["artifact"] = artifact_rec[:500]
 
-        if center in _at.get("centers", {}):
-            _at["centers"][center]["done"]     = True
-            _at["centers"][center]["artifact"] = artifact_rec[:500]
+        # ── v49-F: для lens-Дэвы admission вычисляется ДО bash-секции ──────────
+        # Линза-артефакт сначала проходит ThoughtDelta-карантин (на тексте, без
+        # bash-фактов); только допущенный артефакт может исполнять bash, писать
+        # proposal/BASH_FACTS/shared_ctx. FAIL-CLOSED: ThoughtState выключен,
+        # apply бросает, admission отсутствует/отклонён → bash не исполняется.
+        _lens_block_bash = False
+        if _is_lens_deva:
+            if _thought_state is not None:
+                try:
+                    _td = compute_thought_delta(
+                        deva=deva, center=center, artifact=artifact,
+                        rune=artifact_rune, action="none", bash_success=None,
+                        repeated=bool(repeats_collapsed),
+                        mode=_pre_janus.get("mode", ""),
+                        diagnostic_authorized=bool(
+                            _pre_janus.get("diagnostic_authorized", False)
+                        ),
+                        pre_janus_frame=_pre_janus,
+                        thought_state=_thought_state,
+                        lens_conditioned=True,
+                    )
+                    _td_result = apply_thought_delta(
+                        _thought_state, _td,
+                        user_text=_lens_user_text, bash_facts="",
+                    )
+                    if _evidence_ledger is not None:
+                        _update_evidence_from_delta(
+                            _evidence_ledger, _td,
+                            open_added=bool(_td_result["open_added"]),
+                        )
+                except Exception as _td_err:
+                    _sys_log(f"[THOUGHT] lens pre-admission failed: {_td_err}")
+                    _td_result = None
+                _lens_block_bash = (
+                    _td_result is None
+                    or bool(_td_result.get("lens_fully_rejected"))
+                )
+            else:
+                _lens_block_bash = True   # ThoughtState выключен → fail closed
 
-        if (
+        if _lens_block_bash:
+            # Линза не пропустила артефакт → bash/proposal/BASH_FACTS не возникают.
+            if "```bash" in artifact or _is_safe_body_raw_bash(artifact):
+                _sys_log(
+                    f"ᛉ MUSL lens: bash withheld pre-admission ({deva})"
+                )
+        elif (
             center in EXEC_CENTERS
             and artifact_rune != "ᛁ"
             and _pre_janus.get("mode") in _REFLECTIVE_MODES
@@ -3826,6 +4336,19 @@ def conduct(raw_text: str) -> None:
         ):
             if "```bash" in artifact or _is_safe_body_raw_bash(artifact):
                 _sys_log("ᛉ PRE-JANUS blocked diagnostic bash")
+        elif (
+            center in EXEC_CENTERS
+            and artifact_rune != "ᛁ"
+            and deva in _lens_conditioned_devas
+            and not _lens_execution_authorized(_lens_user_text)
+        ):
+            # v49-C: lens-conditioned Deva без явного запроса на исполнение —
+            # bash-блок не запускается. Упоминание bash/команды не является
+            # явным запросом (нужны глагол + объект исполнения).
+            if "```bash" in artifact or _is_safe_body_raw_bash(artifact):
+                _sys_log(
+                    f"ᛉ MUSL lens blocked bash for {deva} (no explicit execution request)"
+                )
         elif center in EXEC_CENTERS and artifact_rune != "ᛁ":
             blocks = re.findall(r"```bash\s*\n(.*?)\n```", artifact, re.DOTALL)
             if not blocks and center not in executed_centers:
@@ -3866,7 +4389,9 @@ def conduct(raw_text: str) -> None:
 
         # ── v39.0: ThoughtDelta — мысль проходит через Дэва ───────────────────
         # Детерминированно, без LLM; ошибка слоя не трогает conduct-путь.
-        if _thought_state is not None:
+        # v49-F: для lens-Дэвы admission уже выполнен ДО bash-секции (см. выше),
+        # поэтому здесь обрабатываются только НЕ-lens Дэвы (bash_success учтён).
+        if _thought_state is not None and not _is_lens_deva:
             try:
                 _new_bash_facts = _bash_fact_parts[_bf_before_deva:]
                 _deva_bash_ok = (
@@ -3887,12 +4412,46 @@ def conduct(raw_text: str) -> None:
                     ),
                     pre_janus_frame=_pre_janus,
                     thought_state=_thought_state,
+                    lens_conditioned=False,
                 )
-                apply_thought_delta(_thought_state, _td)
+                _td_result = apply_thought_delta(
+                    _thought_state, _td,
+                    user_text=_lens_user_text,
+                    bash_facts="\n".join(_bash_fact_parts),
+                )
                 if _evidence_ledger is not None:
-                    _update_evidence_from_delta(_evidence_ledger, _td)
+                    _update_evidence_from_delta(
+                        _evidence_ledger,
+                        _td,
+                        open_added=bool(_td_result["open_added"]),
+                    )
             except Exception as _td_err:
                 _sys_log(f"[THOUGHT] delta failed: {_td_err}")
+
+        # ── v49-D/E: отложенная атомарная gated-персистенция lens-артефакта ────
+        # Линза-артефакт атомарен: если ОТКЛОНЕНО хотя бы одно поле — сырой
+        # артефакт НЕ попадает в shared_ctx/shared_memory/new_artifacts/Janus/
+        # HOT/WARM/CRYSTAL. v49-E FAIL-CLOSED: если ThoughtDelta недоступен
+        # (ThoughtState выключен, исключение, admission=None) — тоже withhold.
+        if _is_lens_deva:
+            _withhold = (
+                _td_result is None
+                or bool(_td_result.get("lens_fully_rejected"))
+            )
+            if center in _at.get("centers", {}):
+                _at["centers"][center]["done"] = True
+            if _withhold:
+                _sys_log(
+                    f"ᛉ MUSL lens: fully-rejected artifact withheld from "
+                    f"memory/Janus ({deva})"
+                )
+            else:
+                shared_ctx += f"\n{record}\n"
+                state.setdefault("shared_memory", []).append(record)
+                new_artifacts.append(record)
+                prev_artifact[center] = artifact_rec
+                if center in _at.get("centers", {}):
+                    _at["centers"][center]["artifact"] = artifact_rec[:500]
 
         state["current_node"] = f"Node_{center}_{deva}"
         state["active_role"]  = deva
