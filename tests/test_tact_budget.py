@@ -1146,10 +1146,11 @@ class TestSemanticExtraction(unittest.TestCase):
         """claims/open/constraints не превышают 7 при потоке разных дельт."""
         from core.janus_conductor import apply_thought_delta
         ts = self._state()
+        # v40.2: claims семантически различны, иначе их срежет novelty-фильтр
         for i in range(10):
             apply_thought_delta(ts, {
                 "deva": f"D{i}", "center": "Head", "rune": "ᛃ", "action": "none",
-                "claim": f"claim номер {i} о системе",
+                "claim": f"claim слово{i} вектор{i} о системе",
                 "open": f"открытый вопрос {i}",
                 "constraint": f"ограничение {i}",
                 "metric_delta": {},
@@ -1217,6 +1218,190 @@ class TestSemanticExtraction(unittest.TestCase):
             jc._extract_open_question_or_issue("БОЛЬ: ошибка такта.")
             jc._extract_constraint("предлагаю bash", frame)
             jc._extract_contradiction("текст", ts)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v40.2: семантическая новизна claims — NEW MEANING vs NEW WORDING
+# ─────────────────────────────────────────────────────────────────────────────
+class TestClaimNoveltyFilter(unittest.TestCase):
+
+    _BASE_CLAIM = "Структура памяти обеспечивает гибкость инвариантов."
+    _PARAPHRASE = "Структуры памяти дают гибкость инвариантам."
+    _DIFFERENT  = "Потоки записи идут через журналируемый буфер."
+
+    def _state(self):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        text = "спроектируй новую память"
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, claim):
+        return {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": claim, "metric_delta": {}, "reason": "test",
+        }
+
+    def test_signature_normalizes_russian_morphology(self):
+        """«структура памяти» и «структуры памяти» дают общую основу."""
+        from core.janus_conductor import _claim_signature
+        s1 = _claim_signature("структура памяти")
+        s2 = _claim_signature("структуры памяти")
+        self.assertIn("структур", s1)
+        self.assertIn("структур", s2)
+        self.assertTrue(s1 & s2)
+
+    def test_content_word_inflections_collapse_to_one_stem(self):
+        """Падежные формы контент-слов сводятся к одной общей основе."""
+        from core.janus_conductor import _claim_signature
+        for forms in (
+            "запись записи записью",
+            "надежность надежности надежностью",
+            "структура структуры структурой",
+        ):
+            sig = _claim_signature(forms)
+            self.assertEqual(len(sig), 1, (forms, sig))
+
+    def test_inflection_pairs_have_identical_signatures(self):
+        """Каждая пара форм даёт идентичную сигнатуру → перекрытие 1.0."""
+        from core.janus_conductor import _claim_signature
+        for a, b in (
+            ("запись", "записью"),
+            ("надежность", "надежностью"),
+            ("надежность", "надежности"),
+            ("структура", "структурой"),
+        ):
+            self.assertEqual(
+                _claim_signature(a), _claim_signature(b), (a, b),
+            )
+
+    def test_stopword_morphology_excluded_from_signature(self):
+        """Морфоформы стоп-слов (системы/памятью/архитектуры) исключены."""
+        from core.janus_conductor import _claim_signature
+        self.assertEqual(_claim_signature("система системы системой"), set())
+        sig = _claim_signature("память памяти памятью архитектура архитектуры")
+        self.assertEqual(sig, set())
+        for stem in ("систем", "памят", "архитектур"):
+            self.assertFalse(
+                any(t.startswith(stem) for t in sig), stem,
+            )
+
+    def test_first_claim_novelty_is_one(self):
+        from core.janus_conductor import _claim_novelty_score
+        self.assertEqual(_claim_novelty_score(self._BASE_CLAIM, []), 1.0)
+
+    def test_paraphrase_rejected(self):
+        from core.janus_conductor import _is_semantically_novel_claim
+        self.assertFalse(
+            _is_semantically_novel_claim(self._PARAPHRASE, [self._BASE_CLAIM])
+        )
+
+    def test_different_claim_accepted(self):
+        from core.janus_conductor import _is_semantically_novel_claim
+        self.assertTrue(
+            _is_semantically_novel_claim(self._DIFFERENT, [self._BASE_CLAIM])
+        )
+
+    def test_low_novelty_claim_not_added_and_no_reward(self):
+        """Парафраз: claims не растут, confidence/coherence/risk без награды."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        self.assertEqual(len(ts["claims"]), 1)
+        conf = ts["metrics"]["confidence"]
+        coh  = ts["metrics"]["coherence"]
+        risk = ts["metrics"]["risk"]
+        apply_thought_delta(ts, self._delta(self._PARAPHRASE))
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
+        self.assertAlmostEqual(ts["metrics"]["risk"], risk)
+        # Мягкий спад novelty (0.10 − 0.02), без жёсткого наказания
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.08)
+        # Trace помечает скип, не раздуваясь artifact-телом
+        self.assertIn("claim skipped: low novelty", ts["trace"][-1]["reason"])
+
+    def test_rejected_claim_metric_delta_reward_suppressed(self):
+        """metric_delta confidence/coherence парафраза подавляется при скипе."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        self.assertEqual(len(ts["claims"]), 1)
+        conf = ts["metrics"]["confidence"]
+        coh  = ts["metrics"]["coherence"]
+        delta = self._delta(self._PARAPHRASE)
+        delta["metric_delta"] = {"confidence": 0.1, "coherence": 0.1}
+        delta["reason"] = "semantic_claim"
+        apply_thought_delta(ts, delta)
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
+
+    def test_rejected_claim_keeps_independent_rewards(self):
+        """bash_success/approved награды живут даже при скипе парафраза."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        grounding = ts["metrics"]["grounding"]
+        conf      = ts["metrics"]["confidence"]
+        delta = self._delta(self._PARAPHRASE)
+        delta["metric_delta"] = {"grounding": 0.2, "confidence": 0.1}
+        delta["reason"] = "bash_success,semantic_claim"
+        apply_thought_delta(ts, delta)
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertAlmostEqual(ts["metrics"]["grounding"], grounding + 0.2)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf + 0.1)
+
+    def test_accepted_novel_claim_raises_novelty_metric(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.0)
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.10)
+        self.assertIn("novelty=1.00,claim_added=true", ts["trace"][-1]["reason"])
+        apply_thought_delta(ts, self._delta(self._DIFFERENT))
+        self.assertEqual(len(ts["claims"]), 2)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.20)
+
+    def test_cap_claims_still_seven(self):
+        """10 семантически разных claims → cap 7 держится."""
+        from core.janus_conductor import apply_thought_delta
+        nouns = ["поток", "буфер", "журнал", "индекс", "снимок",
+                 "реплика", "шина", "кэш", "сжатие", "вектор"]
+        tails = ["хранилище", "канал", "регистр", "слот", "контур",
+                 "узел", "модуль", "цикл", "граф", "якорь"]
+        ts = self._state()
+        for i in range(10):
+            apply_thought_delta(
+                ts, self._delta(f"{nouns[i]} соединяет {tails[i]}"),
+            )
+        self.assertEqual(len(ts["claims"]), 7)
+
+    def test_exact_duplicate_still_rejected(self):
+        """Старый точный дедуп жив — novelty-фильтр его дополняет."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+        self.assertEqual(len(ts["claims"]), 1)
+
+    def test_novelty_filter_no_llm_calls_chain_unchanged(self):
+        """Фильтр детерминирован: ни одного HTTP-вызова, FOHAT_CHAIN цел."""
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._state()
+            jc._claim_signature(self._BASE_CLAIM)
+            jc._claim_novelty_score(self._PARAPHRASE, [self._BASE_CLAIM])
+            jc._is_semantically_novel_claim(self._DIFFERENT, [self._BASE_CLAIM])
+            jc.apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
+            jc.apply_thought_delta(ts, self._delta(self._PARAPHRASE))
         http_post.assert_not_called()
         self.assertEqual(
             [deva for _, deva, _ in jc.FOHAT_CHAIN],

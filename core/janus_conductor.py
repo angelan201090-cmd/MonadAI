@@ -1721,6 +1721,95 @@ def _is_near_duplicate_thought(candidate, existing: list) -> bool:
     return False
 
 
+# ── v40.2: семантическая новизна claims — NEW MEANING vs NEW WORDING ─────────
+# Детерминированный фильтр (без LLM/эмбеддингов): сигнатура claim из
+# стем-токенов, Jaccard-перекрытие с существующими claims. ДОПОЛНЯЕТ старый
+# дедуп _is_near_duplicate_thought (точный/префиксный), не заменяет его.
+THOUGHT_CLAIM_NOVELTY_THRESHOLD = 0.42
+_CLAIM_SIG_MAX_TOKENS = 12
+# Источники наград confidence/coherence, НЕ привязанные к claim: при
+# отклонении claim по низкой новизне эти награды подавлять нельзя.
+_NON_CLAIM_REWARD_REASONS = frozenset(
+    ("approved", "bash_success", "introspective_identity")
+)
+# Мини-стемминг русской морфологии: длинные суффиксы первыми, срез один раз.
+_CLAIM_SIG_SUFFIXES = tuple(sorted(
+    {
+        "остью",
+        "ость", "ости", "ами", "ями", "ого", "его", "ому", "ему",
+        "ыми", "ими", "иях", "ция", "ции", "ая", "яя", "ое", "ые",
+        "ий", "ый", "ой", "ие", "ов", "ев", "ам", "ям", "ах", "ях",
+        "ия", "ых", "их", "ом", "ем", "ью",
+        "а", "я", "ы", "и", "у", "ю", "е", "о", "ь",
+    },
+    key=len, reverse=True,
+))
+
+
+def _claim_stem(tok: str) -> str:
+    """Срез одного самого длинного суффикса; основа не короче 3 символов."""
+    for suf in _CLAIM_SIG_SUFFIXES:
+        if tok.endswith(suf) and len(tok) - len(suf) >= 3:
+            return tok[: -len(suf)]
+    return tok
+
+
+_CLAIM_SIG_STOPWORDS = frozenset((
+    "и", "в", "во", "на", "для", "как", "что", "это", "быть",
+    "должен", "должна", "должны", "будет", "нужно", "необходимо",
+    "система", "архитектура", "данные", "память",
+    "новый", "новая", "новое", "использовать", "обеспечить",
+    "the", "and", "or", "of", "to", "a", "an", "is", "are",
+))
+# Стоп-слова нормализуются ТЕМ ЖЕ стеммером, что и токены-кандидаты:
+# «системы/системой/системе» ловятся по основе «систем», как и «система».
+_CLAIM_SIG_STOP_STEMS = frozenset(_claim_stem(w) for w in _CLAIM_SIG_STOPWORDS)
+
+
+def _claim_signature(text: str) -> set[str]:
+    """Сигнатура смысла claim: нормализованные стем-токены (≤12). Без LLM."""
+    t = str(text or "").lower().replace("ё", "е")
+    tokens: list[str] = []
+    # [a-zа-я0-9]+ отсекает руны и пунктуацию
+    for tok in re.findall(r"[a-zа-я0-9]+", t):
+        if len(tok) <= 2 or tok in _CLAIM_SIG_STOPWORDS:
+            continue
+        tok = _claim_stem(tok)
+        if tok in _CLAIM_SIG_STOP_STEMS:
+            continue
+        if tok not in tokens:
+            tokens.append(tok)
+        if len(tokens) >= _CLAIM_SIG_MAX_TOKENS:
+            break
+    return set(tokens)
+
+
+def _claim_novelty_score(candidate: str, existing_claims: list) -> float:
+    """Новизна claim ∈ [0,1]: 1 − max Jaccard-перекрытие с existing_claims."""
+    if not existing_claims:
+        return 1.0
+    cand_sig = _claim_signature(candidate)
+    if not cand_sig:
+        return 0.0
+    max_overlap = 0.0
+    for prior in existing_claims:
+        prior_sig = _claim_signature(prior)
+        union = cand_sig | prior_sig
+        if not union:
+            continue
+        max_overlap = max(max_overlap, len(cand_sig & prior_sig) / len(union))
+    return _clamp01(1.0 - max_overlap)
+
+
+def _is_semantically_novel_claim(
+    candidate: str,
+    existing_claims: list,
+    threshold: float = THOUGHT_CLAIM_NOVELTY_THRESHOLD,
+) -> bool:
+    """True — claim несёт НОВЫЙ СМЫСЛ, а не новую формулировку старого."""
+    return _claim_novelty_score(candidate, existing_claims) >= threshold
+
+
 def _extract_semantic_claim(
     artifact_text: str,
     pre_janus_frame: dict,
@@ -1964,6 +2053,8 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     v40.1: дедуп (точный + префикс >80 симв.), contradiction → open с
     префиксом 'contradiction:', метрики добавления начисляются ТОЛЬКО когда
     элемент реально добавлен (дубли не накручивают уверенность).
+    v40.2: поверх дедупа — фильтр семантической новизны claim: парафраз
+    имеющегося смысла не добавляется и не получает награды метрик.
     trace — append-only внутри такта, max THOUGHT_MAX_TRACE записей.
     """
     metrics = thought_state["metrics"]
@@ -1971,14 +2062,33 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
               "novelty": 0.0, "confidence": 0.0}
 
     claim = delta.get("claim")
+    claim_added = False
+    claim_novelty: float | None = None
     if (
         claim
         and len(thought_state["claims"]) < THOUGHT_MAX_CLAIMS
         and not _is_near_duplicate_thought(claim, thought_state["claims"])
     ):
-        thought_state["claims"].append(str(claim)[:THOUGHT_FIELD_MAXLEN])
-        refine["confidence"] += 0.05
-        refine["coherence"]  += 0.05
+        claim_novelty = _claim_novelty_score(str(claim), thought_state["claims"])
+        claim_added = claim_novelty >= THOUGHT_CLAIM_NOVELTY_THRESHOLD
+        if claim_added:
+            thought_state["claims"].append(str(claim)[:THOUGHT_FIELD_MAXLEN])
+            refine["confidence"] += 0.05
+            refine["coherence"]  += 0.05
+            refine["novelty"]    += min(0.10, claim_novelty * 0.10)
+        else:
+            # Парафраз: без награды, без роста risk, мягкий спад novelty
+            refine["novelty"] -= 0.02
+
+    # v40.2.1: отклонённый по новизне claim не повышает confidence/coherence
+    # и через metric_delta дельты — если только награда не идёт от независимого
+    # источника (bash_success / APPROVED / introspective_identity).
+    _claim_reasons = set(str(delta.get("reason", "")).split(","))
+    _suppress_claim_reward = (
+        claim_novelty is not None
+        and not claim_added
+        and not (_claim_reasons & _NON_CLAIM_REWARD_REASONS)
+    )
 
     open_q = delta.get("open")
     if (
@@ -2016,9 +2126,19 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
 
     for key in metrics:
         dv = (delta.get("metric_delta") or {}).get(key, 0.0)
+        if _suppress_claim_reward and key in ("confidence", "coherence") and dv > 0:
+            dv = 0.0
         metrics[key] = round(_clamp01(metrics[key] + dv + refine[key]), 4)
     if len(thought_state["trace"]) < THOUGHT_MAX_TRACE:
-        thought_state["trace"].append(_compact_delta(delta))
+        entry = _compact_delta(delta)
+        if claim_novelty is not None:
+            marker = f"novelty={claim_novelty:.2f},claim_added={'true' if claim_added else 'false'}"
+            if not claim_added:
+                marker += ",claim skipped: low novelty"
+            entry["reason"] = (
+                f"{entry['reason']},{marker}" if entry["reason"] else marker
+            )[:THOUGHT_FIELD_MAXLEN]
+        thought_state["trace"].append(entry)
 
 
 def compact_thought_state(thought_state: dict) -> dict:
