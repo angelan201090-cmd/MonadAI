@@ -1610,6 +1610,80 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
+# ── v44: Evidence Ledger — тактовый журнал заземлённости (НЕ persistence) ──────
+# Lifetime: создаётся перед Фохат-спиралью, обновляется после каждой
+# ThoughtDelta, читается один раз для потолка confidence, затем отбрасывается.
+# НЕ попадает в last_thought_state, WARM, CRYSTAL, compact summary, контекст Дэвов.
+_EVIDENCE_K_BY_MODE = {
+    "diagnostic":    0.65,
+    "forensic":      0.75,
+    "design":        0.45,
+    "conceptual":    0.45,
+    "introspection": 0.45,
+}
+_EVIDENCE_K_DEFAULT = 0.60
+
+
+def _new_evidence_ledger() -> dict:
+    return {"confirmed": 0, "refuted": 0, "unverified": 0, "contradiction": 0}
+
+
+def _update_evidence_from_delta(evidence: dict, delta: dict) -> None:
+    """Инкрементирует счётчики по маркерам дельты. APPROVED не считается confirmed."""
+    reasons = set(str(delta.get("reason", "")).split(","))
+    open_q  = str(delta.get("open") or "").lower()
+    if "bash_success" in reasons:
+        evidence["confirmed"] += 1
+    if "bash_failure" in reasons:
+        evidence["refuted"] += 1
+    if (
+        "pain" in reasons
+        or "недостаточно данных" in open_q
+        or "нет подтверждения" in open_q
+    ):
+        evidence["unverified"] += 1
+    if delta.get("contradiction"):
+        evidence["contradiction"] += 1
+
+
+def _evidence_support_ratio(evidence: dict) -> float:
+    """confirmed / max(1, total) ∈ [0,1]."""
+    total = sum(evidence.values())
+    return evidence.get("confirmed", 0) / max(1, total)
+
+
+def _evidence_confidence_ceiling(evidence: dict, mode: str) -> float | None:
+    """Потолок confidence по соотношению негативных свидетельств. None если total=0."""
+    total = sum(evidence.values())
+    if total == 0:
+        return None
+    negative = (
+        evidence.get("refuted", 0)
+        + evidence.get("unverified", 0)
+        + evidence.get("contradiction", 0)
+    )
+    k = _EVIDENCE_K_BY_MODE.get(mode, _EVIDENCE_K_DEFAULT)
+    ceiling = 1.0 - k * negative / total
+    return max(0.15, min(1.0, ceiling))
+
+
+def _apply_evidence_confidence_ceiling(
+    thought_state: dict, evidence: dict, mode: str
+) -> bool:
+    """Применяет потолок к thought_state.metrics.confidence. Не поднимает. Возвращает True если применён."""
+    ceiling = _evidence_confidence_ceiling(evidence, mode)
+    if ceiling is None:
+        return False
+    metrics = thought_state.get("metrics")
+    if not isinstance(metrics, dict):
+        return False
+    current = float(metrics.get("confidence", 0.5))
+    if ceiling >= current:
+        return False
+    metrics["confidence"] = round(ceiling, 4)
+    return True
+
+
 def make_thought_seed(raw_text: str, pre_janus_frame: dict | None) -> dict:
     """ThoughtSeed — зародыш мысли из raw_text + PRE-JANUS frame.
 
@@ -3132,6 +3206,7 @@ def conduct(raw_text: str) -> None:
 
     # ── v39.0: ThoughtSeed → ThoughtState (слой наблюдения, поведение не меняет) ──
     _thought_state: dict | None = None
+    _evidence_ledger: dict | None = None   # v44: тактовый журнал заземлённости
     if THOUGHT_STATE_ENABLED:
         try:
             _thought_seed = make_thought_seed(
@@ -3139,6 +3214,7 @@ def conduct(raw_text: str) -> None:
                 _pre_janus if PRE_JANUS_ENABLED else None,
             )
             _thought_state = make_thought_state(_thought_seed, grounding=_grounding)
+            _evidence_ledger = _new_evidence_ledger()
             _sys_log(
                 "[THOUGHT] seed "
                 f"intent={_thought_seed['intent']} mode={_thought_seed['mode']}"
@@ -3514,6 +3590,8 @@ def conduct(raw_text: str) -> None:
                     thought_state=_thought_state,
                 )
                 apply_thought_delta(_thought_state, _td)
+                if _evidence_ledger is not None:
+                    _update_evidence_from_delta(_evidence_ledger, _td)
             except Exception as _td_err:
                 _sys_log(f"[THOUGHT] delta failed: {_td_err}")
 
@@ -3950,6 +4028,21 @@ def conduct(raw_text: str) -> None:
     # ── v39.0: bounded ThoughtState такта → field_state (compact, без artifact-тел) ──
     if THOUGHT_STATE_ENABLED and _thought_state is not None:
         try:
+            # v44: потолок confidence от журнала свидетельств (до compact)
+            if _evidence_ledger is not None:
+                _ev_mode = _pre_janus.get("mode", "")
+                _ev_applied = _apply_evidence_confidence_ceiling(
+                    _thought_state, _evidence_ledger, _ev_mode,
+                )
+                _ev = _evidence_ledger
+                _sys_log(
+                    f"[EVIDENCE] confirmed={_ev['confirmed']} "
+                    f"refuted={_ev['refuted']} "
+                    f"unverified={_ev['unverified']} "
+                    f"contradiction={_ev['contradiction']} "
+                    f"ceiling={_evidence_confidence_ceiling(_ev, _ev_mode)!r} "
+                    f"applied={_ev_applied}"
+                )
             state["last_thought_state"] = compact_thought_state(_thought_state)
             _tm = state["last_thought_state"]["metrics"]
             _sys_log(

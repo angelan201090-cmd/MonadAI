@@ -1976,5 +1976,193 @@ class TestThoughtGlyphs(unittest.TestCase):
         self.assertNotIn("глиф", _dyad_src)
 
 
+class TestEvidenceLedger(unittest.TestCase):
+    """v44: тактовый журнал свидетельств — эфемерный, без persistence."""
+
+    def _ledger(self):
+        from core.janus_conductor import _new_evidence_ledger
+        return _new_evidence_ledger()
+
+    def _delta(self, **kw):
+        base = {"deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+                "claim": None, "open": None, "constraint": None,
+                "contradiction": None, "metric_delta": {}, "reason": "neutral"}
+        base.update(kw)
+        return base
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import _pre_janus_frame, make_thought_seed, make_thought_state
+        return make_thought_state(make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5)
+
+    # 1. new ledger has four zero counters
+    def test_new_ledger_zeros(self):
+        ev = self._ledger()
+        self.assertEqual(ev, {"confirmed": 0, "refuted": 0, "unverified": 0, "contradiction": 0})
+
+    # 2. bash_success increments confirmed
+    def test_bash_success_increments_confirmed(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(reason="bash_success"))
+        self.assertEqual(ev["confirmed"], 1)
+        self.assertEqual(ev["refuted"], 0)
+        self.assertEqual(ev["unverified"], 0)
+        self.assertEqual(ev["contradiction"], 0)
+
+    # 3. bash_failure increments refuted
+    def test_bash_failure_increments_refuted(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(reason="bash_failure"))
+        self.assertEqual(ev["refuted"], 1)
+        self.assertEqual(ev["confirmed"], 0)
+
+    # 4. pain reason increments unverified
+    def test_pain_increments_unverified(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(reason="pain"))
+        self.assertEqual(ev["unverified"], 1)
+
+    # 5. open "недостаточно данных" increments unverified
+    def test_open_nedostatochno_dannyh_increments_unverified(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(
+            reason="semantic_open", open="недостаточно данных для выводов"
+        ))
+        self.assertEqual(ev["unverified"], 1)
+
+    # 6. open "нет подтверждения" increments unverified
+    def test_open_net_podtverzhdeniya_increments_unverified(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(
+            reason="semantic_open", open="нет подтверждения гипотезы"
+        ))
+        self.assertEqual(ev["unverified"], 1)
+
+    # 7. contradiction increments contradiction
+    def test_contradiction_field_increments_contradiction(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(
+            reason="contradiction",
+            contradiction="artifact denies execution but proposes executable action",
+        ))
+        self.assertEqual(ev["contradiction"], 1)
+
+    # 8. APPROVED does not increment confirmed
+    def test_approved_does_not_increment_confirmed(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(reason="approved"))
+        self.assertEqual(ev["confirmed"], 0)
+        self.assertEqual(sum(ev.values()), 0)
+
+    # 9. outward_action_blocked does not increment anything
+    def test_outward_blocked_does_not_increment_anything(self):
+        from core.janus_conductor import _update_evidence_from_delta
+        ev = self._ledger()
+        _update_evidence_from_delta(ev, self._delta(
+            reason="outward_blocked",
+            constraint="outward action blocked by introspection",
+        ))
+        self.assertEqual(sum(ev.values()), 0)
+
+    # 10. support ratio: total=0 → 0.0
+    def test_support_ratio_zero_total(self):
+        from core.janus_conductor import _evidence_support_ratio
+        ev = self._ledger()
+        self.assertEqual(_evidence_support_ratio(ev), 0.0)
+
+    # 11. support ratio: all confirmed → 1.0
+    def test_support_ratio_all_confirmed(self):
+        from core.janus_conductor import _evidence_support_ratio
+        ev = {"confirmed": 3, "refuted": 0, "unverified": 0, "contradiction": 0}
+        self.assertAlmostEqual(_evidence_support_ratio(ev), 1.0)
+
+    # 12. support ratio: mixed
+    def test_support_ratio_mixed(self):
+        from core.janus_conductor import _evidence_support_ratio
+        ev = {"confirmed": 1, "refuted": 1, "unverified": 1, "contradiction": 1}
+        self.assertAlmostEqual(_evidence_support_ratio(ev), 0.25)
+
+    # 13. confidence ceiling lowers confidence when evidence is bad
+    def test_confidence_ceiling_lowers_confidence(self):
+        from core.janus_conductor import _apply_evidence_confidence_ceiling
+        ts = self._state()
+        ts["metrics"]["confidence"] = 0.9
+        ev = {"confirmed": 0, "refuted": 2, "unverified": 3, "contradiction": 1}
+        applied = _apply_evidence_confidence_ceiling(ts, ev, "default")
+        self.assertTrue(applied)
+        self.assertLess(ts["metrics"]["confidence"], 0.9)
+
+    # 14. confidence ceiling no-op when total=0
+    def test_confidence_ceiling_noop_when_total_zero(self):
+        from core.janus_conductor import _apply_evidence_confidence_ceiling
+        ts = self._state()
+        original = ts["metrics"]["confidence"]
+        ev = self._ledger()
+        applied = _apply_evidence_confidence_ceiling(ts, ev, "default")
+        self.assertFalse(applied)
+        self.assertEqual(ts["metrics"]["confidence"], original)
+
+    # 15. confidence ceiling does not raise confidence
+    def test_confidence_ceiling_does_not_raise(self):
+        from core.janus_conductor import _apply_evidence_confidence_ceiling
+        ts = self._state()
+        ts["metrics"]["confidence"] = 0.4
+        # all confirmed → ceiling = 1.0 ≥ 0.4 → no change
+        ev = {"confirmed": 5, "refuted": 0, "unverified": 0, "contradiction": 0}
+        applied = _apply_evidence_confidence_ceiling(ts, ev, "default")
+        self.assertFalse(applied)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], 0.4)
+
+    # 16. evidence key absent from compact last_thought_state
+    def test_evidence_not_in_compact_last_thought_state(self):
+        from core.janus_conductor import compact_thought_state, apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(reason="pain"))
+        compact = compact_thought_state(ts)
+        self.assertNotIn("evidence", compact)
+
+    # 17. evidence not in compact thought summary
+    def test_evidence_not_in_compact_thought_summary(self):
+        from core.janus_conductor import _compact_thought_state_summary, apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(reason="pain"))
+        summary = _compact_thought_state_summary(ts)
+        self.assertNotIn("evidence", summary.lower())
+
+    # 18. no LLM calls added
+    def test_no_llm_calls(self):
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ev = jc._new_evidence_ledger()
+            jc._update_evidence_from_delta(ev, self._delta(reason="bash_success"))
+            jc._evidence_support_ratio(ev)
+            jc._evidence_confidence_ceiling(ev, "default")
+            ts = self._state()
+            jc._apply_evidence_confidence_ceiling(ts, ev, "default")
+        http_post.assert_not_called()
+
+    # 19. FOHAT_CHAIN unchanged
+    def test_fohat_chain_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+    # 20. janus_dyad unchanged
+    def test_janus_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.janus_dyad).lower()
+        self.assertNotIn("evidence", src)
+        self.assertNotIn("свидетельств", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
