@@ -21,12 +21,14 @@ EVENT_PAIN    = "PAIN"
 EVENT_STASIS  = "STASIS"
 EVENT_HALLUC  = "HALLUC"
 EVENT_REDEEM  = "REDEEM"
+EVENT_VOID    = "VOID"   # v49-G: kill-switch (принудительная Пралайя)
 
 DEBT_WEIGHTS = {
     EVENT_PAIN:   1.0,
     EVENT_STASIS: 0.5,
     EVENT_HALLUC: 2.0,
     EVENT_REDEEM: -1.5,
+    EVENT_VOID:   3.0,   # v49-G: кармический долг кризиса заземления
 }
 
 # Порог длины для автоматического засчёта REDEEM
@@ -56,6 +58,14 @@ def _save(ledger: dict) -> None:
 
 def record(event_type: str, role: str, content: str, cycle: int = 0) -> dict:
     ledger  = _load()
+    # v50-B: устойчивость к повреждённому/неполному ledger — без KeyError на
+    # 'karma_debt'/'history' (kill-switch VOID-путь должен записываться всегда).
+    if not isinstance(ledger, dict):
+        ledger = {}
+    if not isinstance(ledger.get("history"), list):
+        ledger["history"] = []
+    if not isinstance(ledger.get("karma_debt"), (int, float)):
+        ledger["karma_debt"] = 0.0
     payload = f"{event_type}:{role}:{cycle}:{content}"
     sha     = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

@@ -1411,11 +1411,180 @@ def _bash_facts_verify_system_status(bash_facts: str) -> bool:
     )
 
 
+_CONCEPTUAL_MIN_CHARS = 24
+_CONCEPTUAL_BOILERPLATE = (
+    "задача принята", "task accepted", "[musl_lens]", "observational_only",
+    "твоя микрозадача", "shared_experience", "план_януса",
+)
+
+
+def _conceptual_prose_drop_reason(text: str) -> str | None:
+    """v50-B: причина отбраковки вырожденной conceptual-прозы, иначе None.
+
+    Детерминированно, без LLM. Ловит: пусто/почти пусто, длинные прогоны одного
+    символа, петли повторяющихся слогов/токенов ('пампамамам…'), доминирование
+    системного boilerplate.
+    """
+    raw = str(text or "")
+    stripped = raw.strip()
+    if len(stripped) < _CONCEPTUAL_MIN_CHARS:
+        return "empty_or_near_empty"
+    low = stripped.lower()
+    # boilerplate-доминирование
+    if any(m in low for m in _CONCEPTUAL_BOILERPLATE) and len(stripped) < 120:
+        return "boilerplate_dominated"
+    # длинный прогон одного символа (aaaaaa / ......)
+    if re.search(r"(.)\1{9,}", stripped):
+        return "char_run"
+    # петля слога/подстроки 2-4 симв., повторённая ≥4 раз ('амамамам', 'пампампам')
+    if re.search(r"(.{2,4})\1{3,}", low):
+        return "syllable_loop"
+    # доминирование одного повторяющегося слова ('пампамам пампамам пампамам …')
+    words = re.findall(r"[a-zа-яё0-9]+", low)
+    if len(words) >= 4:
+        from collections import Counter as _C
+        most = _C(words).most_common(1)[0][1]
+        if most / len(words) >= 0.5:
+            return "repeated_word"
+        if len(words) >= 8 and len(set(words)) / len(words) < 0.25:
+            return "low_lexical_diversity"
+    return None
+
+
+_CONCEPT_MARKER_RE = re.compile(
+    r"\bэто\b|\bесть\b|\bозначает\b|\bявляется\b|\bdefines?\b|\bis\b", re.I
+)
+# v50-F: split на маркер определения (тире/копула) — для проверки разнообразия сторон
+_CONCEPT_SPLIT_RE = re.compile(
+    r"\s*[—–]\s*|\s+это\s+|\s+есть\s+|\s+означает\s+|\s+является\s+"
+    r"|\s+is\s+|\s+means\s+|\s+defines?\s+",
+    re.I,
+)
+# Связки/копулы — не считаются содержательной частью стороны определения.
+# Стемминг ленивый: _claim_stem определён ниже по файлу.
+_CONCEPT_COPULA_WORDS = (
+    "это", "эта", "этот", "есть", "является", "означает",
+    "is", "are", "means", "define", "defines",
+)
+_CONCEPT_COPULA_STEMS_CACHE: frozenset | None = None
+_CONCEPT_ANCHOR_WORDS = (
+    "память", "сознание", "опыт", "информация", "процесс", "система",
+    "данные", "знание", "смысл", "восприятие", "мышление", "внимание",
+    "идентичность",
+    "memory", "consciousness", "experience", "information", "process",
+    "system", "data", "knowledge", "meaning", "perception", "thinking",
+    "attention", "identity",
+)
+_CONCEPT_ANCHOR_STEMS_CACHE: frozenset | None = None
+
+
+def _conceptual_copula_stems() -> frozenset:
+    global _CONCEPT_COPULA_STEMS_CACHE
+    if _CONCEPT_COPULA_STEMS_CACHE is None:
+        _CONCEPT_COPULA_STEMS_CACHE = frozenset(
+            _claim_stem(w) for w in _CONCEPT_COPULA_WORDS
+        )
+    return _CONCEPT_COPULA_STEMS_CACHE
+
+
+def _conceptual_anchor_stems() -> frozenset:
+    global _CONCEPT_ANCHOR_STEMS_CACHE
+    if _CONCEPT_ANCHOR_STEMS_CACHE is None:
+        _CONCEPT_ANCHOR_STEMS_CACHE = frozenset(
+            _claim_stem(w) for w in _CONCEPT_ANCHOR_WORDS
+        )
+    return _CONCEPT_ANCHOR_STEMS_CACHE
+
+
+def _conceptual_side_stems(side: str) -> set[str]:
+    """Содержательные стемы стороны определения (без копул)."""
+    stems = {_claim_stem(w) for w in re.findall(r"[a-zа-яё]{3,}", str(side).lower())}
+    return stems - _conceptual_copula_stems()
+
+
+def _conceptual_marker_sides_diverse(text: str) -> bool:
+    """True when short definition sides differ and carry a conceptual anchor."""
+    parts = _CONCEPT_SPLIT_RE.split(text, maxsplit=1)
+    if len(parts) != 2:
+        return False
+    left, right = _conceptual_side_stems(parts[0]), _conceptual_side_stems(parts[1])
+    if not left or not right:
+        return False               # сторона без содержания
+    if left == right:
+        return False               # стороны идентичны по смыслу
+    if len(left | right) < 2:
+        return False               # нет реального разнообразия
+    if not ((left | right) & _conceptual_anchor_stems()):
+        return False               # разные бессмысленные токены не дают семантику
+    return True
+
+
+def _has_strong_conceptual_marker(text: str) -> bool:
+    """v50-D/F: True — короткий фрагмент несёт смысл. Маркер-определение
+    принимается ТОЛЬКО при лексическом разнообразии сторон (v50-F).
+    Детерминированно, без LLM.
+    """
+    t = str(text or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    _content = re.findall(r"[a-zа-яё]{3,}", low)
+    # паттерн определения 'X — Y' / 'X это/есть/is Y' — требует разные стороны
+    if (("—" in t or "–" in t) or _CONCEPT_MARKER_RE.search(low)):
+        return _conceptual_marker_sides_diverse(t)
+    # руна/статус + осмысленные слова
+    if re.search(r"[ᚠ-ᛯ]", t) and len(_content) >= 2:
+        return True
+    return False
+
+
+def _should_keep_conceptual_prose(text: str) -> bool:
+    """v50-E: ЕДИНЫЙ предикат keep/drop для ОБОИХ conceptual-путей (withheld и
+    нормального Janus-входа). Детерминированно, без LLM.
+
+    Drop: пусто/мусор/петли/повтор/boilerplate, и короткие фрагменты без смысла.
+    Keep: содержательный текст; короткие определения ('X — это Y'); короткие
+    предикатные формы без связки ('Память хранит опыт.' — концепт+глагол+объект:
+    ≥3 различных содержательных слова).
+    """
+    body = str(text or "").strip()
+    if not body:
+        return False
+    reason = _conceptual_prose_drop_reason(body)
+    if reason is None:
+        return True                       # содержательный, не вырожденный
+    if reason != "empty_or_near_empty":
+        return False                      # активный мусор — всегда drop
+    # Маркер-определение не может обходить anchor-проверку через общий word-count.
+    if (("—" in body or "–" in body)
+            or _CONCEPT_MARKER_RE.search(body.lower())):
+        return _has_strong_conceptual_marker(body)
+    # Короткая предикатная форма без маркера: ≥3 содержательных слова.
+    content = set(re.findall(r"[a-zа-яё]{3,}", body.lower()))
+    return len(content) >= 3
+
+
+def _log_grammar_fail(node: str, grammar: str, parser_error: str,
+                      fallback_used: bool) -> None:
+    """v49-G: диагностика отказа грамматики Persona/Shadow (без смены поведения).
+
+    Сигнализирует, что структурированный (grammar-constrained) ответ узла не
+    распарсился и был задействован строковый fallback. Только лог.
+    """
+    _sys_log(
+        "[GRAMMAR_FAIL] "
+        f"node={node} grammar={grammar} "
+        f"parser_error={str(parser_error)[:160]} "
+        f"fallback_used={'true' if fallback_used else 'false'}"
+    )
+
+
 def janus_dyad(
     task: str,
     triad_artifacts: str,
     k_jera: float = 0.0,
     bash_facts: str = "",
+    conceptual_trace: bool = False,
 ) -> tuple[str, float, float, bool]:
     """
     Трёхфазная диалектика Януса:
@@ -1458,9 +1627,10 @@ def janus_dyad(
         d_persona      = _score_persona(persona_text)
         if quality_hint > 0:
             d_persona  = min(1.5, d_persona * (0.8 + quality_hint * 0.4))
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as _pe:
         persona_text = persona_raw_text
         d_persona    = _score_persona(persona_text)
+        _log_grammar_fail("Persona", "PERSONA_GBNF", _pe, fallback_used=True)
 
     _sys_log(f"🎭 Персона: D={d_persona:.2f} | {len(persona_text)} символов")
     print(f"\n\033[2m[PERSONA_ASSEMBLY]\033[0m\n{persona_text}\n", flush=True)
@@ -1492,11 +1662,12 @@ def janus_dyad(
         s_shadow       = min(1.0, severity_val)
         retry_needed   = (verdict == "FATAL_VETO")
         veto_marker    = verdict
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as _se:
         # Fallback: старый строковый парсинг
         shadow_text  = shadow_raw_text
         s_shadow, retry_needed = _score_shadow(shadow_raw_text)
         veto_marker  = "FATAL_VETO" if retry_needed else ("VETO" if "VETO" in shadow_raw_text else "OK")
+        _log_grammar_fail("Shadow", "SHADOW_GBNF", _se, fallback_used=True)
 
     _sys_log(f"🌑 Тень: S={s_shadow:.2f} | {veto_marker}")
     print(f"\n\033[2m[SHADOW_VETO | {veto_marker}]\033[0m\n{shadow_text}\n", flush=True)
@@ -1533,6 +1704,19 @@ def janus_dyad(
         "stream": False,
     }, timeout=180)
     synthesis = _extract_janus_content(synth_raw, "Синтез")
+    # v50-B/C: fallback при пустом/оффлайн синтезе (до finalize). Скоринг не меняется.
+    if not synthesis.strip() or "вне сети" in synthesis:
+        if persona_text.strip():
+            synthesis = persona_text
+            _sys_log("[SYNTHESIS_FALLBACK] reason=empty_synthesis")
+        else:
+            # v50-C: и Персона, и Синтез пусты → детерминированный fail-safe,
+            # финальный ответ не должен быть пустым.
+            synthesis = (
+                "ᛁ Задача не выполнена: финальный синтез пуст. "
+                "Требуется повтор такта."
+            )
+            _sys_log("[SYNTHESIS_FALLBACK] reason=empty_persona_and_synthesis")
     synthesis = _protect_literals(synthesis, f"{task}\n{persona_text}")
     synthesis = _finalize_synthesis_for_mode(
         synthesis,
@@ -1544,6 +1728,15 @@ def janus_dyad(
     if repeats_collapsed:
         _sys_log("ᛁ synthesis repeat collapsed")
     _sys_log(f"✨ Синтез: {len(synthesis)} символов | retry={retry_needed}")
+
+    # v49-G: compact conceptual trace — размеры входов фаз Януса (только лог).
+    if conceptual_trace:
+        _sys_log(
+            "[CONCEPTUAL_TRACE] "
+            f"persona_input_size={len(triad_artifacts)} "
+            f"shadow_input_size={len(persona_text)} "
+            f"synthesis_input_size={len(_synth_user)}"
+        )
 
     return synthesis, d_persona, s_shadow, retry_needed
 
@@ -1897,17 +2090,34 @@ def _identity_low_grounding_allowed(frame: dict | None) -> bool:
     )
 
 
+_REFLECTIVE_KILL_MODES = ("conceptual", "introspection")
+
+
 def _should_trigger_grounding_kill_switch(
     grounding: float,
     *,
     repair_tact: bool,
     pre_janus_frame: dict | None,
+    danger_signal: bool = False,
 ) -> bool:
-    return bool(
-        grounding < 0.50
-        and not repair_tact
-        and not _identity_low_grounding_allowed(pre_janus_frame)
+    if grounding >= 0.50:
+        return False
+    # v50-C: реальный danger ПЕРЕБИВАЕТ repair/identity/reflective-послабления.
+    # Слова «ремонт/диагностика» сами по себе не делают такт безопасным.
+    if danger_signal:
+        return True
+    # Без danger: repair-такт и identity-introspection подавляют kill (как раньше).
+    if repair_tact or _identity_low_grounding_allowed(pre_janus_frame):
+        return False
+    # v50-B: conceptual/introspection — низкое grounding/claims=0 само по себе НЕ kills.
+    frame = pre_janus_frame if isinstance(pre_janus_frame, dict) else {}
+    reflective = (
+        frame.get("mode") in _REFLECTIVE_KILL_MODES
+        or frame.get("intent") in _REFLECTIVE_KILL_MODES
     )
+    if reflective:
+        return False
+    return True
 
 
 def _decompose_from_micro_tasks(
@@ -3717,10 +3927,31 @@ def conduct(raw_text: str) -> None:
         _sys_log(
             f"⚠️ identity introspection allowed despite low grounding={_grounding:.2f}"
         )
+    # v50-B/C: реальный danger из прошлого такта (Evidence эфемерна — читаем прокси
+    # из сохранённого state). Сигналы: shock, контрадикции/refuted/bash-failure/
+    # stale-конфликт в open, failed-diagnostic/halluc/veto маркер.
+    _prior_lts = state.get("last_thought_state") or {}
+    _prior_open = _prior_lts.get("open") or []
+    _DANGER_OPEN_MARKERS = (
+        "contradiction:", "refuted", "опровергнут", "bash failed", "bash_failure",
+        "сбой диагностики", "failed diagnostic", "stale", "устарел", "конфликт",
+        "hallucinat", "галлюцинац",
+    )
+    _kill_danger = bool(
+        int(state.get("shock_count", 0) or 0) > 0
+        or any(
+            any(m in str(o).lower() for m in _DANGER_OPEN_MARKERS)
+            for o in _prior_open
+        )
+        or str(state.get("marker", "")).upper() in (
+            "VOID", "VETO", "FATAL_VETO", "HALLUC", "SHOCK", "PAIN"
+        )
+    )
     if _should_trigger_grounding_kill_switch(
         _grounding,
         repair_tact=repair_tact,
         pre_janus_frame=_early_pre_janus,
+        danger_signal=_kill_danger,
     ):
         _sys_log(
             f"⊘ KILL-SWITCH: grounding={_grounding:.2f} < 0.50 "
@@ -3946,6 +4177,17 @@ def conduct(raw_text: str) -> None:
     # v49-B/C: тактовая пометка Дэв, получивших MUSL-линзу. Живёт только внутри
     # такта; не персистится, в ThoughtState/WARM/CRYSTAL не попадает.
     _lens_conditioned_devas: set[str] = set()
+    _lens_withheld_count = 0   # v49-G: счётчик withheld артефактов (только трейс)
+    # v50-A: tact-local prose-канал ТОЛЬКО для conceptual режима. Withheld-артефакты
+    # пересылаются в Janus как ПРОЗА; никогда не попадают в ThoughtState/Evidence/
+    # Memory/HOT/WARM/CRYSTAL/claims/lessons/archetypes/glyphs. Не персистится.
+    conceptual_prose_artifacts: list[str] = []
+    _conceptual_mode = (
+        (_pre_janus.get("mode") == "conceptual"
+         or _pre_janus.get("intent") == "conceptual")
+        and not _pre_janus.get("diagnostic_authorized")
+        and not _pre_janus.get("action_authorized")
+    )
     # Текст пользователя для lens-проверок в цикле Дэвов — вычисляется один раз.
     _lens_user_text: str = str(_at.get("original") or raw_text or "")
     if THOUGHT_STATE_ENABLED:
@@ -4441,10 +4683,24 @@ def conduct(raw_text: str) -> None:
             if center in _at.get("centers", {}):
                 _at["centers"][center]["done"] = True
             if _withhold:
-                _sys_log(
-                    f"ᛉ MUSL lens: fully-rejected artifact withheld from "
-                    f"memory/Janus ({deva})"
-                )
+                _lens_withheld_count += 1
+                # v50-A: conceptual режим — prose-канал в Janus (НЕ в state/memory).
+                # Только текст; ThoughtState/Evidence/Memory остаются нетронутыми.
+                # v50-E: единый предикат keep/drop (как на нормальном пути).
+                if _conceptual_mode:
+                    if _should_keep_conceptual_prose(artifact_rec):
+                        conceptual_prose_artifacts.append(record)
+                        _sys_log(
+                            f"ᚹ conceptual prose forwarded to Janus only ({deva})"
+                        )
+                    else:
+                        _drop = _conceptual_prose_drop_reason(artifact_rec) or "low_content"
+                        _sys_log(f"[CONCEPTUAL_PROSE_DROP] reason={_drop} ({deva})")
+                else:
+                    _sys_log(
+                        f"ᛉ MUSL lens: fully-rejected artifact withheld from "
+                        f"memory/Janus ({deva})"
+                    )
             else:
                 shared_ctx += f"\n{record}\n"
                 state.setdefault("shared_memory", []).append(record)
@@ -4598,6 +4854,39 @@ def conduct(raw_text: str) -> None:
     if _janus_lines_removed:
         _sys_log(f"ᚠ HOT dedupe removed {_janus_lines_removed} repeated lines")
 
+    # ── v50-C: conceptual garbage filter на НОРМАЛЬНОМ пути (Janus-вход) ──────
+    # Вырожденные записи (петли/boilerplate/пусто) убираются из all_artifacts ДО
+    # Януса. state-канал не трогается (new_artifacts/shared_memory/память целы) —
+    # фильтруется только локальная копия для Janus.
+    if _conceptual_mode and all_artifacts.strip():
+        _kept_records = []
+        for _blk in re.split(r"\n(?=\[)", all_artifacts):
+            # v50-D: чистый структурный сепаратор [SECTION] (скобки, без тела) —
+            # сохраняем как формат, не как контент.
+            if re.match(r"^\s*\[[^\]]*\]\s*$", _blk):
+                _kept_records.append(_blk)
+                continue
+            # снять заголовок записи [center/deva|rune]: и проверить ТЕЛО
+            # v50-E: единый предикат keep/drop (как на withheld-пути).
+            _body = re.sub(r"^\s*\[[^\]]*\]:?\s*", "", _blk)
+            if _should_keep_conceptual_prose(_body):
+                _kept_records.append(_blk)
+            else:
+                _reason = _conceptual_prose_drop_reason(_body) or "low_content"
+                _sys_log(f"[CONCEPTUAL_PROSE_DROP] reason={_reason} (janus_input)")
+        all_artifacts = "\n".join(_kept_records)
+
+    # ── v50-A: conceptual prose-канал → ТОЛЬКО в Janus-вход (all_artifacts) ────
+    # Withheld conceptual-артефакты добавляются как проза для Persona/Shadow/Synthesis.
+    # Не трогают shared_ctx/shared_memory/new_artifacts/state — state-канал идентичен.
+    if _conceptual_mode and conceptual_prose_artifacts:
+        _prose = "\n".join(conceptual_prose_artifacts)
+        all_artifacts = (all_artifacts + "\n" + _prose).strip() if all_artifacts else _prose
+        _sys_log(
+            f"ᚹ conceptual prose channel: +{len(conceptual_prose_artifacts)} "
+            f"artifacts → Janus only ({len(_prose)} chars)"
+        )
+
     synthesis     = ""
     d_persona     = 1.0   # значения по умолчанию (если Янус оффлайн)
     s_shadow      = 0.4
@@ -4629,12 +4918,27 @@ def conduct(raw_text: str) -> None:
         except Exception as _ts_sum_err:
             _sys_log(f"[THOUGHT] summary for Janus failed: {_ts_sum_err}")
 
+    # v49-G: compact conceptual trace (только intent=conceptual; только лог).
+    _conceptual = (
+        _pre_janus.get("intent") == "conceptual"
+        or _pre_janus.get("mode") == "conceptual"
+    )
+    if _conceptual:
+        _sys_log(
+            "[CONCEPTUAL_TRACE] "
+            f"artifact_count={len(new_artifacts)} "
+            f"withheld_count={_lens_withheld_count} "
+            f"shared_ctx_count={len(new_artifacts)} "
+            f"persona_input_size={len(all_artifacts)}"
+        )
+
     try:
         synthesis, d_persona, s_shadow, retry_needed = janus_dyad(
             task           = _task_for_janus,
             triad_artifacts= all_artifacts,
             k_jera         = soc.k_jera,
             bash_facts     = bash_facts,
+            conceptual_trace = _conceptual,
         )
         if _pre_janus.get("mode") == "introspection":
             synthesis = _strip_identity_contamination(

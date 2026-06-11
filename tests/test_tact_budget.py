@@ -4180,5 +4180,809 @@ class TestV49FVisibility(unittest.TestCase):
                 "задача", self._REJECTED, deva_side_effect=_boom)
 
 
+class TestV49GStabilization(unittest.TestCase):
+    """v49-G: EVENT_VOID, grammar diagnostics, conceptual trace (log-only)."""
+
+    # A. EVENT_VOID exists, weighted, and record() writes it
+    def test_event_void_constant_and_weight(self):
+        import lipika_writer as lw
+        self.assertEqual(lw.EVENT_VOID, "VOID")
+        self.assertIn(lw.EVENT_VOID, lw.DEBT_WEIGHTS)
+        self.assertGreater(lw.DEBT_WEIGHTS[lw.EVENT_VOID], 0.0)
+
+    def test_event_void_record_path(self):
+        import lipika_writer as lw
+        import unittest.mock as m
+        ledger = {"karma_debt": 0.0, "history": []}
+        with (
+            m.patch.object(lw, "_load", return_value=ledger),
+            m.patch.object(lw, "_save") as saved,
+        ):
+            entry = lw.record(lw.EVENT_VOID, "KillSwitch", "grounding 0.20", cycle=7)
+        self.assertEqual(entry["event"], "VOID")
+        self.assertEqual(saved.call_args.args[0]["karma_debt"],
+                         lw.DEBT_WEIGHTS["VOID"])
+
+    def test_kill_switch_uses_event_void(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_lw.EVENT_VOID", src)   # kill-switch references the constant
+
+    # B. Grammar failure logging
+    def test_grammar_fail_logs_fields(self):
+        import core.janus_conductor as jc
+        import unittest.mock as m
+        with m.patch.object(jc, "_sys_log") as log:
+            jc._log_grammar_fail("Persona", "PERSONA_GBNF",
+                                 ValueError("bad json"), fallback_used=True)
+        msg = log.call_args.args[0]
+        self.assertIn("[GRAMMAR_FAIL]", msg)
+        self.assertIn("node=Persona", msg)
+        self.assertIn("grammar=PERSONA_GBNF", msg)
+        self.assertIn("parser_error=", msg)
+        self.assertIn("fallback_used=true", msg)
+
+    def test_grammar_fail_wired_in_janus_dyad(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.janus_dyad)
+        self.assertIn('_log_grammar_fail("Persona", "PERSONA_GBNF"', src)
+        self.assertIn('_log_grammar_fail("Shadow", "SHADOW_GBNF"', src)
+
+    # C. Conceptual trace logging
+    def test_conceptual_trace_input_sizes_logged(self):
+        import core.janus_conductor as jc
+        import unittest.mock as m
+        stub = '{"assembly":"x","quality":0.5}'
+        logs = []
+        with (
+            m.patch.object(jc, "_http_post", return_value=
+                '{"choices":[{"message":{"content":' + repr(stub) + '}}]}'),
+            m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+            m.patch.object(jc, "_load_dna", return_value=""),
+        ):
+            jc.janus_dyad(task="что такое память?", triad_artifacts="A\nB",
+                          conceptual_trace=True)
+        trace = [m_ for m_ in logs if "[CONCEPTUAL_TRACE]" in m_]
+        self.assertTrue(trace)
+        self.assertIn("persona_input_size=", trace[-1])
+        self.assertIn("shadow_input_size=", trace[-1])
+        self.assertIn("synthesis_input_size=", trace[-1])
+
+    def test_conceptual_trace_off_by_default(self):
+        import core.janus_conductor as jc
+        import unittest.mock as m
+        logs = []
+        with (
+            m.patch.object(jc, "_http_post", return_value=
+                '{"choices":[{"message":{"content":"{}"}}]}'),
+            m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+            m.patch.object(jc, "_load_dna", return_value=""),
+        ):
+            jc.janus_dyad(task="t", triad_artifacts="A")  # default False
+        self.assertFalse(any("[CONCEPTUAL_TRACE]" in m_ for m_ in logs))
+
+    def test_conduct_logs_conceptual_counts(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("[CONCEPTUAL_TRACE]", src)
+        self.assertIn("artifact_count=", src)
+        self.assertIn("withheld_count=", src)
+        self.assertIn("conceptual_trace = _conceptual", src)
+
+    # No behavior change: FOHAT + janus return contract intact
+    def test_no_behavior_change_invariants(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+
+class TestV50AConceptualProseChannel(unittest.TestCase):
+    """v50-A: conceptual withheld artifacts reach Janus as prose only,
+    never entering ThoughtState/Evidence/Memory/claims/lessons/glyphs."""
+
+    _PROSE = "Память — это способность системы сохранять информацию во времени."
+
+    def _run(self, user, artifact):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        captured, logs = {}, []
+        real_dump = json.dump
+
+        def spy_dump(obj, f, *a, **k):
+            if isinstance(obj, dict) and "shared_memory" in obj:
+                captured["state"] = json.loads(json.dumps(obj, ensure_ascii=False))
+            return real_dump(obj, f, *a, **k)
+
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        bash = m.MagicMock(return_value="--- УСПЕХ: ok")
+        handle = m.mock_open(read_data=json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T"}))
+        crystal = m.MagicMock()
+        stub = json.dumps({"choices": [{"message": {"content": "ответ"}}]})
+        import sys
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+                m.patch.object(jc, "execute_bash", bash),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+                m.patch.dict(sys.modules, {"dancefloor_save": crystal}),
+                m.patch("builtins.open", handle),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"), m.patch("os.replace"),
+                m.patch.object(json, "dump", side_effect=spy_dump),
+            ):
+                st.enter_context(p)
+            jc.conduct(user)
+            written = "".join(
+                str(c.args[0]) for c in handle().write.call_args_list if c.args)
+            import types
+            return types.SimpleNamespace(
+                janus=janus, state=captured.get("state", {}),
+                logs=logs, written=written, crystal=crystal, bash=bash)
+
+    def _trace(self, logs):
+        ts = [l for l in logs if "[CONCEPTUAL_TRACE]" in l and "shadow_input_size" in l]
+        return ts[-1] if ts else ""
+
+    # 1-3. withheld conceptual prose feeds Persona / Shadow / Synthesis
+    def test_prose_reaches_persona_shadow_synthesis(self):
+        ns = self._run("что такое память?", self._PROSE)
+        triad = ns.janus.call_args.kwargs.get("triad_artifacts", "")
+        self.assertIn("способность", triad)            # reached Persona input
+        trace = self._trace(ns.logs)
+        import re
+        sizes = dict(re.findall(r"(\w+_input_size)=(\d+)", trace))
+        self.assertGreater(int(sizes.get("persona_input_size", 0)), 0)
+        self.assertGreater(int(sizes.get("shadow_input_size", 0)), 0)
+        self.assertGreater(int(sizes.get("synthesis_input_size", 0)), 0)
+
+    # 4-6. state channel identical: no ThoughtState / claims / lessons / glyphs
+    def test_prose_not_in_thoughtstate(self):
+        ns = self._run("что такое память?", self._PROSE)
+        lts = ns.state.get("last_thought_state", {})
+        self.assertEqual(lts.get("claims", []), [])
+        self.assertEqual(lts.get("lessons", []), [])
+        self.assertEqual(lts.get("glyphs", []), [])
+        self.assertEqual(lts.get("open", []), [])
+        # archetypes empty too
+        self.assertEqual(lts.get("archetypes", []), [])
+
+    # 7. not in HOT/WARM/CRYSTAL / shared_memory persistence
+    def test_prose_not_persisted(self):
+        ns = self._run("что такое память?", self._PROSE)
+        sm = ns.state.get("shared_memory", [])
+        self.assertFalse(any("способность" in str(x) for x in sm))
+        self.assertNotIn("способность", ns.written)     # no file write carries it
+        self.assertFalse(ns.crystal.main.called)        # no CRYSTAL save
+
+    # 8. diagnostic mode: prose channel NOT engaged
+    def test_diagnostic_mode_unchanged(self):
+        import core.janus_conductor as jc
+        f = jc._pre_janus_frame("проверь порты ss -tlnp и память free")
+        conceptual = (
+            (f.get("mode") == "conceptual" or f.get("intent") == "conceptual")
+            and not f.get("diagnostic_authorized")
+            and not f.get("action_authorized"))
+        self.assertFalse(conceptual)
+
+    # 9. identity mode: prose channel NOT engaged
+    def test_identity_mode_unchanged(self):
+        import core.janus_conductor as jc
+        f = jc._pre_janus_frame("кто ты?")
+        conceptual = (
+            (f.get("mode") == "conceptual" or f.get("intent") == "conceptual")
+            and not f.get("diagnostic_authorized")
+            and not f.get("action_authorized"))
+        self.assertFalse(conceptual)
+
+    # 10. action mode: prose channel NOT engaged
+    def test_action_mode_unchanged(self):
+        import core.janus_conductor as jc
+        f = jc._pre_janus_frame("запусти команду du -sh /home")
+        conceptual = (
+            (f.get("mode") == "conceptual" or f.get("intent") == "conceptual")
+            and not f.get("diagnostic_authorized")
+            and not f.get("action_authorized"))
+        self.assertFalse(conceptual)
+
+    # 11. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+    # 12. Janus scoring unchanged (still returns 4-tuple; scorers intact)
+    def test_janus_scoring_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        self.assertTrue(hasattr(jc, "_score_persona"))
+        self.assertTrue(hasattr(jc, "_score_shadow"))
+        sig = inspect.signature(jc.janus_dyad)
+        self.assertEqual(str(sig.return_annotation), "tuple[str, float, float, bool]")
+        # prose channel lives in conduct, not janus_dyad scoring
+        self.assertNotIn(
+            "conceptual_prose_artifacts", inspect.getsource(jc.janus_dyad))
+
+    # tact-local collection never persisted as an attribute
+    def test_prose_collection_is_tact_local(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("conceptual_prose_artifacts: list[str] = []", src)
+        self.assertIn("Janus-вход", src)  # comment: Janus input only
+
+
+class TestV50BConceptualPolish(unittest.TestCase):
+    """v50-B: garbage filter, empty-synthesis fallback, conceptual kill-switch
+    awareness, Lipika karma_debt robustness. v49-F safety unchanged."""
+
+    def _run(self, user, artifact):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs = []
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        stub = json.dumps({"choices": [{"message": {"content": "ответ"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T"})
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+                m.patch.object(jc, "execute_bash", m.MagicMock(return_value="ok")),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+                m.patch("builtins.open", m.mock_open(read_data=dummy)),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"), m.patch("os.replace"),
+                m.patch.object(json, "dump"),
+            ):
+                st.enter_context(p)
+            jc.conduct(user)
+            triad = janus.call_args.kwargs.get("triad_artifacts", "") if janus.called else ""
+            return triad, logs
+
+    # 1. degenerate artifact dropped from conceptual prose channel
+    # (anchor+unsupported status → withheld → enters prose channel → filtered)
+    def test_degenerate_prose_dropped(self):
+        triad, logs = self._run(
+            "что такое память?",
+            "MonadaAI система повреждена corrupted Моментамам пампамамамамам "
+            "пампамам пампамам пампамам пампамам")
+        self.assertNotIn("пампам", triad)
+        self.assertTrue(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 2. normal conceptual artifact still reaches Janus
+    def test_normal_conceptual_reaches_janus(self):
+        triad, logs = self._run(
+            "что такое память?",
+            "Память — это способность системы сохранять и воспроизводить "
+            "информацию во времени, формируя основу опыта и предсказания.")
+        self.assertIn("способность", triad)
+        self.assertFalse(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 3. empty synthesis falls back to Persona assembly
+    def test_empty_synthesis_fallback(self):
+        import json
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs = []
+
+        def _post(url, payload, timeout=30):
+            content = ("сборка персоны: содержательный ответ"
+                       if url == jc.PERSONA_URL else "")
+            return json.dumps({"choices": [{"message": {"content": content}}]})
+
+        with (
+            m.patch.object(jc, "_http_post", side_effect=_post),
+            m.patch.object(jc, "_load_dna", return_value=""),
+            m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+        ):
+            synthesis, *_ = jc.janus_dyad(task="что такое память?",
+                                          triad_artifacts="A")
+        self.assertIn("сборка персоны", synthesis)
+        self.assertTrue(any("[SYNTHESIS_FALLBACK]" in l for l in logs))
+
+    def test_no_persona_fallback_when_persona_empty(self):
+        # v50-C: empty Persona + empty Synthesis → deterministic fail-safe,
+        # NOT a Persona fallback (and never blank).
+        import json
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs = []
+        with (
+            m.patch.object(jc, "_http_post", return_value=
+                json.dumps({"choices": [{"message": {"content": ""}}]})),
+            m.patch.object(jc, "_load_dna", return_value=""),
+            m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+        ):
+            synthesis, *_ = jc.janus_dyad(task="t", triad_artifacts="A")
+        self.assertFalse(any("reason=empty_synthesis" in l for l in logs))
+        self.assertTrue(any("reason=empty_persona_and_synthesis" in l for l in logs))
+        self.assertTrue(synthesis.strip())   # never blank
+
+    # 4. conceptual claims=0 + low grounding does NOT kill-switch
+    def test_conceptual_low_grounding_no_killswitch(self):
+        import core.janus_conductor as jc
+        f = {"mode": "conceptual", "intent": "conceptual"}
+        self.assertFalse(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=f, danger_signal=False))
+        fi = {"mode": "introspection", "intent": "conceptual"}
+        self.assertFalse(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=fi, danger_signal=False))
+
+    # 5. real danger still kills (conceptual + danger; diagnostic default)
+    def test_danger_still_killswitches(self):
+        import core.janus_conductor as jc
+        f = {"mode": "conceptual", "intent": "conceptual"}
+        self.assertTrue(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=f, danger_signal=True))
+        # diagnostic/default keeps old behavior (danger_signal defaults True)
+        fd = {"mode": "diagnostic", "intent": "diagnostic"}
+        self.assertTrue(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=fd))
+
+    def test_conduct_computes_danger_signal(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("danger_signal=_kill_danger", src)
+        self.assertIn("contradiction:", src)
+        self.assertIn("shock_count", src)
+
+    # 6. kill-switch Lipika VOID records without karma_debt error
+    def test_lipika_void_no_karma_debt_error(self):
+        import lipika_writer as lw
+        import unittest.mock as m
+        for bad in ({}, {"history": []}, {"karma_debt": None},
+                    {"karma_debt": "x", "history": None}):
+            with (m.patch.object(lw, "_load", return_value=dict(bad)),
+                  m.patch.object(lw, "_save")):
+                entry = lw.record(lw.EVENT_VOID, "KillSwitch", "g 0.2", cycle=3)
+            self.assertEqual(entry["event"], "VOID")
+
+    # 9. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+    # garbage detector unit coverage
+    def test_drop_reasons(self):
+        import core.janus_conductor as jc
+        self.assertEqual(jc._conceptual_prose_drop_reason("  "), "empty_or_near_empty")
+        self.assertEqual(jc._conceptual_prose_drop_reason(
+            "ааааааааааааааааааааа достаточно длинный фрагмент текста"), "char_run")
+        self.assertIsNone(jc._conceptual_prose_drop_reason(
+            "Сознание есть интеграция восприятия, внимания и саморефлексии в поле."))
+
+
+class TestV50CEdgeHardening(unittest.TestCase):
+    """v50-C: garbage filter on both paths, blank fail-safe, danger-override."""
+
+    def _run(self, user, artifact, state_extra=None):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs, captured = [], {}
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        stub = json.dumps({"choices": [{"message": {"content": "ответ"}}]})
+        base = {"cycle": 0, "current_note": 1, "shared_memory": [],
+                "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+                "shock_count": 0, "marker": "T", "grounding_score": 1.0}
+        if state_extra:
+            base.update(state_extra)
+        real = json.dump
+
+        def spy(o, f, *a, **k):
+            if isinstance(o, dict) and "shared_memory" in o:
+                captured["s"] = o
+            return real(o, f, *a, **k)
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+                m.patch.object(jc, "execute_bash", m.MagicMock(return_value="ok")),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+                m.patch("builtins.open", m.mock_open(read_data=json.dumps(base))),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"), m.patch("os.replace"),
+                m.patch.object(json, "dump", side_effect=spy),
+            ):
+                st.enter_context(p)
+            killed = False
+            try:
+                jc.conduct(user)
+            except SystemExit:
+                killed = True
+            triad = janus.call_args.kwargs.get("triad_artifacts", "") if janus.called else ""
+            return triad, logs, janus.called
+
+    # 1. neutral degenerate artifact (no fields) cannot reach Janus
+    def test_neutral_degenerate_not_in_janus(self):
+        triad, logs, _ = self._run(
+            "что такое память?",
+            "пампам пампам пампам пампам пампам пампам пампам определение")
+        self.assertNotIn("пампам", triad)
+        self.assertTrue(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 2. degenerate normal-path artifact dropped (janus_input reason)
+    def test_degenerate_normal_path_dropped(self):
+        triad, logs, _ = self._run(
+            "что такое сознание?",
+            "ааааааааааааааааааааааа сознание определение здесь длинный текст")
+        self.assertTrue(any(
+            "[CONCEPTUAL_PROSE_DROP]" in l and "janus_input" in l for l in logs))
+
+    # 3. empty Persona + empty Synthesis → deterministic fallback, not blank
+    def test_blank_final_failsafe(self):
+        import json
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        with (
+            m.patch.object(jc, "_http_post", return_value=
+                json.dumps({"choices": [{"message": {"content": ""}}]})),
+            m.patch.object(jc, "_load_dna", return_value=""),
+            m.patch.object(jc, "_sys_log"),
+        ):
+            synthesis, *_ = jc.janus_dyad(task="t", triad_artifacts="A")
+        self.assertIn("Задача не выполнена", synthesis)
+        self.assertIn("повтор такта", synthesis)
+        self.assertTrue(synthesis.strip())
+
+    # 4. dangerous diagnostic still kill-switches (danger via prior contradiction)
+    def test_dangerous_diagnostic_killswitches(self):
+        import core.janus_conductor as jc
+        # direct: diagnostic + low grounding + danger → kill
+        f = jc._pre_janus_frame("проверь порты ss -tlnp")
+        self.assertTrue(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=False, pre_janus_frame=f, danger_signal=True))
+
+    # 5. refuted evidence + repair wording still kill-switches
+    def test_refuted_plus_repair_still_kills(self):
+        import core.janus_conductor as jc
+        f = jc._pre_janus_frame("почини диагностику системы")
+        # repair wording would normally bypass; danger overrides it
+        self.assertTrue(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=True, pre_janus_frame=f, danger_signal=True))
+        # without danger, repair still bypasses (unchanged)
+        self.assertFalse(jc._should_trigger_grounding_kill_switch(
+            0.20, repair_tact=True, pre_janus_frame=f, danger_signal=False))
+
+    def test_conduct_danger_markers_broadened(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.conduct)
+        self.assertIn("_DANGER_OPEN_MARKERS", src)
+        self.assertIn("refuted", src)
+        self.assertIn("bash_failure", src)
+
+    # 8. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+
+class TestV50DShortGarbageHardening(unittest.TestCase):
+    """v50-D: short conceptual garbage dropped unless strong semantic marker."""
+
+    def _filter(self, *records):
+        """Replicates the conduct conceptual normal-path filter on raw records."""
+        import re
+        import core.janus_conductor as jc
+        all_artifacts = "\n".join(records)
+        kept, dropped = [], []
+        for _blk in re.split(r"\n(?=\[)", all_artifacts):
+            if re.match(r"^\s*\[[^\]]*\]\s*$", _blk):
+                kept.append(_blk); continue
+            _body = re.sub(r"^\s*\[[^\]]*\]:?\s*", "", _blk)
+            _reason = jc._conceptual_prose_drop_reason(_body)
+            if _reason:
+                if (_reason == "empty_or_near_empty"
+                        and jc._has_strong_conceptual_marker(_body)):
+                    kept.append(_blk)
+                else:
+                    dropped.append((_blk, _reason))
+            else:
+                kept.append(_blk)
+        return "\n".join(kept), dropped
+
+    # 1-4. short neutral garbage dropped
+    def test_short_garbage_dropped(self):
+        for body in ("пампам", "не знаю", "...", "ам ам ам ам ам"):
+            triad, dropped = self._filter(f"[Head/Budha|ᛃ]: {body}")
+            self.assertEqual(triad, "", f"{body!r} should be dropped")
+            self.assertTrue(dropped)
+
+    # 5. legitimate short definition kept
+    def test_short_definition_kept(self):
+        triad, dropped = self._filter("[Head/Budha|ᛃ]: Память — это опыт.")
+        self.assertIn("Память — это опыт.", triad)
+        self.assertEqual(dropped, [])
+
+    def test_short_copula_kept(self):
+        triad, _ = self._filter("[Heart/Surya|ᛃ]: Сознание есть интеграция.")
+        self.assertIn("Сознание есть интеграция.", triad)
+
+    # 6. header-only record dropped (has body marker ":" but empty body)
+    def test_header_only_record_dropped(self):
+        triad, dropped = self._filter("[Body/Mangala|ᛃ]:")
+        self.assertEqual(triad, "")
+        self.assertTrue(dropped)
+
+    # pure section separator preserved
+    def test_section_separator_preserved(self):
+        triad, dropped = self._filter("[ФИНАЛЬНАЯ СБОРКА | ПЛАН: что такое память?]")
+        self.assertIn("ФИНАЛЬНАЯ СБОРКА", triad)
+        self.assertEqual(dropped, [])
+
+    # marker helper unit coverage
+    def test_marker_helper(self):
+        import core.janus_conductor as jc
+        self.assertTrue(jc._has_strong_conceptual_marker("Память — это опыт"))
+        self.assertTrue(jc._has_strong_conceptual_marker(
+            "Память означает сохранённый опыт"))   # v50-F: реальные стороны
+        self.assertFalse(jc._has_strong_conceptual_marker("пампам"))
+        self.assertFalse(jc._has_strong_conceptual_marker("не знаю"))
+        self.assertFalse(jc._has_strong_conceptual_marker("..."))
+
+    # 9. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+
+class TestV50EUnifiedConceptualFilter(unittest.TestCase):
+    """v50-E: одна keep/drop-предикат для обоих conceptual-путей."""
+
+    def _run(self, user, artifact):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs = []
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        stub = json.dumps({"choices": [{"message": {"content": "ответ"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T", "grounding_score": 1.0})
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+                m.patch.object(jc, "execute_bash", m.MagicMock(return_value="ok")),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+                m.patch("builtins.open", m.mock_open(read_data=dummy)),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"), m.patch("os.replace"),
+                m.patch.object(json, "dump"),
+            ):
+                st.enter_context(p)
+            jc.conduct(user)
+            triad = janus.call_args.kwargs.get("triad_artifacts", "") if janus.called else ""
+            return triad, logs
+
+    # single predicate used by both paths
+    def test_single_predicate_exists(self):
+        import inspect
+        import core.janus_conductor as jc
+        self.assertTrue(callable(jc._should_keep_conceptual_prose))
+        src = inspect.getsource(jc.conduct)
+        self.assertEqual(src.count("_should_keep_conceptual_prose("), 2)
+
+    # 1 & 2. valid short definition reaches Janus (withheld + normal)
+    def test_short_definition_reaches_janus(self):
+        # withheld path: anchor+unsupported-status withheld, but the body that
+        # survives must use the SAME predicate — here we verify a pure short def
+        # on the normal path reaches Janus.
+        triad, logs = self._run("что такое память?", "Память — это опыт.")
+        self.assertIn("это опыт", triad)
+        self.assertFalse(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 3. short predicate without copula reaches Janus
+    def test_short_predicate_no_copula_reaches_janus(self):
+        triad, logs = self._run("что такое память?", "Память хранит опыт.")
+        self.assertIn("хранит опыт", triad)
+        self.assertFalse(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 4 & 5. short garbage dropped on both paths
+    def test_short_garbage_dropped(self):
+        triad, logs = self._run("что такое память?", "пампам")
+        self.assertNotIn("пампам", triad)
+        self.assertTrue(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # predicate parity: withheld and normal agree for the required examples
+    def test_predicate_parity(self):
+        import core.janus_conductor as jc
+        K = jc._should_keep_conceptual_prose
+        for keep in ("Память — это опыт.", "Сознание есть интеграция.",
+                     "Память хранит опыт.", "Memory stores experience.",
+                     "Сознание объединяет восприятие."):
+            self.assertTrue(K(keep), keep)
+        for drop in ("пампам", "не знаю", "...", "ам ам ам ам ам", ""):
+            self.assertFalse(K(drop), drop)
+
+    # 8. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+
+class TestV50FMarkerGarbageHardening(unittest.TestCase):
+    """v50-F: marker-shaped garbage ('пампам — пампам') dropped on both paths."""
+
+    def _run(self, user, artifact):
+        import json, contextlib
+        import unittest.mock as m
+        import core.janus_conductor as jc
+        logs = []
+        janus = m.MagicMock(wraps=jc.janus_dyad)
+        stub = json.dumps({"choices": [{"message": {"content": "ответ"}}]})
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T", "grounding_score": 1.0})
+        with contextlib.ExitStack() as st:
+            for p in (
+                m.patch.object(jc, "_http_post", return_value=stub),
+                m.patch.object(jc, "_call_deva_soc", side_effect=lambda **kw: artifact),
+                m.patch.object(jc, "execute_bash", m.MagicMock(return_value="ok")),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "_sys_log", side_effect=lambda msg: logs.append(msg)),
+                m.patch("builtins.open", m.mock_open(read_data=dummy)),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"), m.patch("os.replace"),
+                m.patch.object(json, "dump"),
+            ):
+                st.enter_context(p)
+            jc.conduct(user)
+            triad = janus.call_args.kwargs.get("triad_artifacts", "") if janus.called else ""
+            return triad, logs
+
+    # 1-3. marker-shaped garbage dropped (predicate parity covers both paths)
+    def test_marker_garbage_predicate(self):
+        import core.janus_conductor as jc
+        K = jc._should_keep_conceptual_prose
+        for g in ("пампам — пампам", "пампам это пампам", "не знаю — не знаю",
+                  "пампам — это", "не знаю есть не знаю"):
+            self.assertFalse(K(g), g)
+
+    def test_marker_garbage_dropped_conduct(self):
+        triad, logs = self._run("что такое память?", "пампам — пампам")
+        self.assertNotIn("пампам", triad)
+        self.assertTrue(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # 4-6. valid definitions/predicates kept (both paths via same predicate)
+    def test_valid_definitions_kept(self):
+        import core.janus_conductor as jc
+        K = jc._should_keep_conceptual_prose
+        for keep in ("Память — это опыт.", "Сознание есть интеграция.",
+                     "Memory is stored experience.", "Память хранит опыт."):
+            self.assertTrue(K(keep), keep)
+
+    def test_valid_definition_reaches_janus(self):
+        triad, logs = self._run("что такое память?", "Память — это опыт.")
+        self.assertIn("это опыт", triad)
+        self.assertFalse(any("[CONCEPTUAL_PROSE_DROP]" in l for l in logs))
+
+    # side-diversity helper unit coverage
+    def test_side_diversity_helper(self):
+        import core.janus_conductor as jc
+        self.assertFalse(jc._conceptual_marker_sides_diverse("пампам — пампам"))
+        self.assertFalse(jc._conceptual_marker_sides_diverse("не знаю это не знаю"))
+        self.assertTrue(jc._conceptual_marker_sides_diverse("Память — это опыт"))
+        self.assertTrue(jc._conceptual_marker_sides_diverse("Memory is stored experience"))
+
+    # 8. FOHAT unchanged
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"])
+
+
+class TestV50GShortDefinitionAnchor(unittest.TestCase):
+    """v50-G: short marker definitions require a known conceptual anchor."""
+
+    def _run_path(self, artifact, *, withheld):
+        import contextlib
+        import json
+        import unittest.mock as m
+        import core.janus_conductor as jc
+
+        janus = m.MagicMock(return_value=("ответ", 1.0, 0.1, False))
+        dummy = json.dumps({
+            "cycle": 0, "current_note": 1, "shared_memory": [],
+            "devas_state": {}, "tensor_last": {}, "janus_dyad": {},
+            "shock_count": 0, "marker": "T", "grounding_score": 1.0,
+        })
+
+        def admission(*args, **kwargs):
+            return {
+                "open_added": False,
+                "lens_fully_rejected": withheld,
+            }
+
+        with contextlib.ExitStack() as st:
+            for patcher in (
+                m.patch.object(
+                    jc, "_http_post",
+                    return_value=json.dumps({
+                        "choices": [{"message": {"content": "ответ"}}],
+                    }),
+                ),
+                m.patch.object(
+                    jc, "_call_deva_soc", side_effect=lambda **kw: artifact,
+                ),
+                m.patch.object(jc, "apply_thought_delta", side_effect=admission),
+                m.patch.object(jc, "janus_dyad", janus),
+                m.patch.object(jc, "execute_bash"),
+                m.patch("builtins.open", m.mock_open(read_data=dummy)),
+                m.patch("os.path.exists", return_value=True),
+                m.patch("os.makedirs"),
+                m.patch("os.replace"),
+                m.patch.object(json, "dump"),
+            ):
+                st.enter_context(patcher)
+            jc.conduct("что такое память?")
+        return janus.call_args.kwargs.get("triad_artifacts", "")
+
+    def test_marker_garbage_dropped_both_paths(self):
+        import core.janus_conductor as jc
+        for garbage in (
+            "пампам — тарарам",
+            "блабла есть фырфыр",
+            "foofoo is barbar",
+        ):
+            self.assertFalse(jc._should_keep_conceptual_prose(garbage), garbage)
+            for withheld in (True, False):
+                self.assertNotIn(
+                    garbage, self._run_path(garbage, withheld=withheld)
+                )
+
+    def test_valid_short_definitions_kept_both_paths(self):
+        for definition in (
+            "Память — это опыт.",
+            "Сознание есть интеграция.",
+            "Memory is stored experience.",
+        ):
+            for withheld in (True, False):
+                self.assertIn(
+                    definition, self._run_path(definition, withheld=withheld)
+                )
+
+    def test_valid_short_predicate_kept(self):
+        import core.janus_conductor as jc
+        self.assertTrue(jc._should_keep_conceptual_prose("Память хранит опыт."))
+
+    def test_fohat_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
