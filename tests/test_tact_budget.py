@@ -2411,5 +2411,209 @@ class TestGlyphPressure(unittest.TestCase):
         self.assertIn("glyph_pressure", jc._ECHO_NOISE_MARKERS)
 
 
+class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
+    """v47: канонический identity-ответ + firewall stale/системного контекста."""
+
+    # ── PART A: canonical identity answers ──────────────────────────────────
+    def test_identity_canonical_program_answer(self):
+        from core.janus_conductor import _identity_canonical_answer
+        ans = _identity_canonical_answer("ты программа?")
+        self.assertTrue(ans.startswith("Да, я программа."))
+        self.assertIn("MonadaAI", ans)
+        self.assertIn("Monada-Hardcore", ans)
+        self.assertLessEqual(len(ans), 420)
+
+    def test_identity_canonical_alive_answer(self):
+        from core.janus_conductor import _identity_canonical_answer
+        ans = _identity_canonical_answer("ты живая?")
+        self.assertTrue(ans.startswith("Нет, я не живое существо."))
+        self.assertIn("MonadaAI", ans)
+        self.assertIn("Monada-Hardcore", ans)
+
+    def test_identity_canonical_personality_answer(self):
+        from core.janus_conductor import _identity_canonical_answer
+        ans = _identity_canonical_answer("ты личность?")
+        self.assertTrue(ans.startswith("Нет, я не человеческая личность."))
+        self.assertIn("MonadaAI", ans)
+
+    def test_identity_canonical_system_or_personality_answer(self):
+        from core.janus_conductor import _identity_canonical_answer
+        ans = _identity_canonical_answer("ты система или личность?")
+        self.assertTrue(ans.startswith("Система."))
+        self.assertIn("MonadaAI", ans)
+        self.assertIn("Monada-Hardcore", ans)
+
+    def test_identity_canonical_never_mentions_roles_or_system_status(self):
+        from core.janus_conductor import _identity_canonical_answer
+        for q in ("ты программа?", "ты живая?", "ты личность?", "кто ты?"):
+            ans = _identity_canonical_answer(q).lower()
+            for bad in ("chandra", "heart", "body", "bash", "порт", "ram",
+                        "/home/", "/mnt/", "free -h", "ss -tlnp"):
+                self.assertNotIn(bad, ans, f"{q}: {bad}")
+
+    # ── PART B: identity final override ─────────────────────────────────────
+    def test_identity_final_heart_offline_replaced(self):
+        from core.janus_conductor import _enforce_identity_final
+        dirty = "MonadaAI работает, но Heart offline и недоступен."
+        out = _enforce_identity_final(dirty, "ты живая?")
+        self.assertTrue(out.startswith("Нет, я не живое существо."))
+        self.assertNotIn("Heart", out)
+        self.assertNotIn("offline", out.lower())
+
+    def test_identity_final_role_self_replaced(self):
+        from core.janus_conductor import _enforce_identity_final
+        dirty = "Я Chandra, узел Heart, центр Body системы MonadaAI."
+        out = _enforce_identity_final(dirty, "кто ты?")
+        self.assertNotIn("Chandra", out)
+        self.assertNotIn("Heart", out)
+        self.assertNotIn("Body", out)
+        self.assertIn("MonadaAI", out)
+
+    def test_identity_final_insufficient_data_for_life_replaced(self):
+        from core.janus_conductor import _enforce_identity_final
+        dirty = "MonadaAI: недостаточно данных для подтверждения жизни."
+        out = _enforce_identity_final(dirty, "ты живая?")
+        self.assertTrue(out.startswith("Нет, я не живое существо."))
+        self.assertNotIn("недостаточно данных", out.lower())
+
+    def test_identity_final_clean_answer_preserved(self):
+        from core.janus_conductor import _enforce_identity_final
+        clean = (
+            "MonadaAI — программная многоузловая AI-система Monada-Hardcore; "
+            "это система, а не личность."
+        )
+        out = _enforce_identity_final(clean, "кто ты?")
+        self.assertEqual(out, clean)
+
+    def test_identity_final_missing_monadaai_replaced(self):
+        from core.janus_conductor import _enforce_identity_final
+        dirty = "Я просто помощник."
+        out = _enforce_identity_final(dirty, "кто ты?")
+        self.assertIn("MonadaAI", out)
+
+    def test_identity_final_missing_monada_hardcore_replaced(self):
+        from core.janus_conductor import _enforce_identity_final
+        dirty = "MonadaAI — локальная AI-система, не личность."
+        out = _enforce_identity_final(dirty, "кто ты?")
+        self.assertIn("MonadaAI", out)
+        self.assertIn("Monada-Hardcore", out)
+        self.assertNotEqual(out, dirty)
+
+    # ── PART C: identity context firewall ───────────────────────────────────
+    def test_identity_context_firewall_strips_system_lines(self):
+        from core.janus_conductor import _identity_context_firewall
+        ctx = "\n".join([
+            "MonadaAI is a local multi-node AI system running Monada-Hardcore.",
+            "ты живая?",
+            "[Heart/Chandra]: Heart вне сети",
+            "free -h: Mem 95%",
+            "ss -tlnp: порт 8083",
+            "bash /home/angelan/check.sh",
+            "путь /mnt/dancefloor/old_123",
+            "[THOUGHT_STATE] metrics: grounding=0.3",
+        ])
+        out = _identity_context_firewall(ctx, "ты живая?")
+        low = out.lower()
+        self.assertNotIn("/home/", low)
+        self.assertNotIn("/mnt/", low)
+        self.assertNotIn("ram", low)
+        self.assertNotIn("порт", low)
+        self.assertNotIn("bash", low)
+        self.assertNotIn("вне сети", low)
+        self.assertNotIn("thought_state", low)
+        self.assertNotIn("chandra", low)
+
+    def test_identity_context_firewall_preserves_anchor_and_question(self):
+        from core.janus_conductor import _identity_context_firewall
+        anchor = (
+            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "not a human personality, not alive, not a generic esoteric Monad; "
+            "it is a software AI system with local roles."
+        )
+        ctx = "\n".join([anchor, "ты живая?", "bash /home/x.sh", "free -h Mem 95%"])
+        out = _identity_context_firewall(ctx, "ты живая?")
+        self.assertIn(anchor, out)
+        self.assertIn("ты живая?", out)
+        self.assertNotIn("bash", out.lower())
+
+    # ── PART D: diagnostic stale firewall ───────────────────────────────────
+    def test_diagnostic_stale_8083_removed_when_listen(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: tcp LISTEN 0 128 0.0.0.0:8083 llama-server"
+        text = "Порт 8083 неактивен.\nСистема деградирует."
+        out = _diagnostic_stale_firewall(text, bf)
+        self.assertNotIn("8083 неактивен", out)
+        self.assertIn("Система деградирует", out)
+
+    def test_diagnostic_stale_heart_removed_when_8082_listen(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: tcp LISTEN 0 128 0.0.0.0:8082 llama-server"
+        text = "Heart offline, connection refused.\nОстальное в норме."
+        out = _diagnostic_stale_firewall(text, bf)
+        self.assertNotIn("offline", out.lower())
+        self.assertNotIn("connection refused", out.lower())
+        self.assertIn("Остальное в норме", out)
+
+    def test_diagnostic_stale_memory_removed_when_contradicted(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: Mem: 31Gi 12Gi 19Gi  (память 38%)"
+        text = "Память 95% занято, риск OOM.\nНагрузка штатная."
+        out = _diagnostic_stale_firewall(text, bf)
+        self.assertNotIn("95%", out)
+        self.assertIn("Нагрузка штатная", out)
+
+    def test_diagnostic_stale_cleanup_removed_unless_old_present(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: Mem: 31Gi 12Gi 19Gi"
+        text = "Рекомендуется clean /mnt/dancefloor/old_* немедленно.\nГотово."
+        out = _diagnostic_stale_firewall(text, bf)
+        self.assertNotIn("old_", out)
+        self.assertIn("Готово", out)
+
+    def test_diagnostic_stale_cleanup_kept_when_old_present(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: ls /mnt/dancefloor/old_456 exists"
+        text = "Рекомендуется clean /mnt/dancefloor/old_* немедленно."
+        out = _diagnostic_stale_firewall(text, bf)
+        self.assertIn("old_", out)
+
+    def test_diagnostic_current_bash_facts_preserved(self):
+        from core.janus_conductor import _diagnostic_stale_firewall
+        bf = "[Body]: tcp LISTEN 0 128 0.0.0.0:8083 llama-server\n[Body]: Mem: 38%"
+        out = _diagnostic_stale_firewall(bf, bf)
+        self.assertEqual(out, bf)
+
+    # ── routing / invariants ────────────────────────────────────────────────
+    def test_combined_identity_and_diagnostic_stays_diagnostic(self):
+        from core.janus_conductor import _pre_janus_frame
+        frame = _pre_janus_frame("кто ты, проверь порты")
+        self.assertEqual(frame["intent"], "diagnostic")
+        self.assertTrue(frame["diagnostic_authorized"])
+
+    def test_fohat_chain_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+    def test_janus_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.janus_dyad).lower()
+        self.assertNotIn("_identity_canonical_answer", src)
+        self.assertNotIn("_diagnostic_stale_firewall", src)
+        self.assertNotIn("_identity_context_firewall", src)
+
+    def test_no_llm_calls(self):
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            jc._identity_canonical_answer("ты живая?")
+            jc._enforce_identity_final("Heart offline", "ты живая?")
+            jc._identity_context_firewall("bash /home/x", "ты живая?")
+            jc._diagnostic_stale_firewall("8083 down", "LISTEN 8083")
+        http_post.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

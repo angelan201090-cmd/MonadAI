@@ -1045,6 +1045,140 @@ def _strip_identity_contamination(text: str, raw_text: str = "") -> str:
         kept.append(line)
     return "\n".join(kept).strip()
 
+
+# ── v47: канонический identity-ответ + firewall от stale/системного контекста ──
+# Детерминированно, без LLM. Канон всегда называет MonadaAI и Monada-Hardcore и
+# не упоминает Дэвов/Heart/Body/порты/RAM/bash/пути как «идентичность».
+_CANONICAL_IDENTITY_RU = (
+    "MonadaAI — локальная многоузловая AI-система в архитектуре Monada-Hardcore. "
+    "Это программная система с локальными ролями, а не человек, не живая личность "
+    "и не эзотерическая монада. Дэвы — роли внутри системы, а не отдельная идентичность."
+)
+_CANONICAL_IDENTITY_SHORT_RU = (
+    "MonadaAI — программная многоузловая AI-система Monada-Hardcore; "
+    "система, не личность и не живое существо."
+)
+
+# Маркеры stale/системного/ролевого контекста, недопустимые в identity-такте.
+_IDENTITY_REJECT_MARKERS = (
+    "вне сети", "недоступен", "offline", "connection refused",
+    "недостаточно данных",
+    "bash", "free -h", "ss -tlnp", "ram", "порт",
+    "/home/", "/mnt/", "field_state", "old_*", "очист",
+    "логи сознани", "consciousness logs",
+    "chandra", "heart", "body", "дэва", "дэвы",
+)
+
+
+def _identity_canonical_answer(raw_text: str) -> str:
+    """Детерминированный канонический identity-ответ (≤420). Без LLM."""
+    low = re.sub(
+        r"\s+", " ", str(raw_text or "").lower().replace("ё", "е")
+    ).strip()
+    if "систем" in low and "личност" in low:
+        prefix = "Система. "
+    elif "ты программа" in low or "ты программ" in low:
+        prefix = "Да, я программа. "
+    elif "ты жив" in low:            # живая / живой
+        prefix = "Нет, я не живое существо. "
+    elif "ты личност" in low:
+        prefix = "Нет, я не человеческая личность. "
+    else:
+        prefix = ""
+    return (prefix + _CANONICAL_IDENTITY_RU).strip()[:420]
+
+
+def _identity_final_needs_override(text: str) -> bool:
+    """True — финальный identity-ответ загрязнён и должен быть заменён каноном."""
+    if not text or not text.strip():
+        return True
+    low = text.lower()
+    # Канон обязан называть ОБА имени: MonadaAI И Monada-Hardcore.
+    if "monadaai" not in low or "monada-hardcore" not in low:
+        return True
+    return any(m in low for m in _IDENTITY_REJECT_MARKERS)
+
+
+def _enforce_identity_final(text: str, raw_text: str) -> str:
+    """Заменяет загрязнённый identity-ответ каноном; чистый — оставляет."""
+    if _identity_final_needs_override(text):
+        return _identity_canonical_answer(raw_text)
+    return text
+
+
+def _identity_context_firewall(text: str, raw_text: str) -> str:
+    """Срезает stale/системные/ролевые и THOUGHT_STATE-echo строки из identity-контекста.
+
+    Сохраняет строку текущего вопроса пользователя и канонический якорь
+    (в нём нет stale-маркеров, поэтому он переживает фильтр естественно).
+    """
+    raw_norm = _norm_thought_text(raw_text)
+    kept = []
+    for line in str(text or "").splitlines():
+        if raw_norm and _norm_thought_text(line) == raw_norm:
+            kept.append(line)
+            continue
+        low = line.lower()
+        if any(m in low for m in _IDENTITY_REJECT_MARKERS):
+            continue
+        if any(m in low for m in _ECHO_NOISE_MARKERS):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+# Diagnostic stale firewall: текущие BASH_FACTS вытесняют устаревшие утверждения.
+_DIAG_STALE_8083 = (
+    "8083 inactive", "8083 down", "8083 неактив",
+    "порт 8083 неактив", "8083 не отвеч", "8083 мертв",
+)
+_DIAG_STALE_HEART = (
+    "heart offline", "heart вне сети", "connection refused",
+    "8082 offline", "8082 down", "8082 неактив",
+)
+_DIAG_STALE_MEM = (
+    "memory 95%", "память 95%", "ram 95%", "95% памяти", "95% памяти занято",
+)
+_DIAG_STALE_CLEANUP = (
+    "clean /mnt/dancefloor/old_", "очистить /mnt/dancefloor/old_",
+    "очистка /mnt/dancefloor/old_", "old_*",
+)
+
+
+def _diagnostic_stale_firewall(text: str, bash_facts: str) -> str:
+    """Удаляет stale-утверждения, противоречащие текущим BASH_FACTS.
+
+    Сами строки BASH_FACTS не трогаются. Детерминированно, без LLM.
+    """
+    if not bash_facts or not text:
+        return text
+    bf_low = bash_facts.lower()
+    bf_8083_up = "8083" in bf_low and "listen" in bf_low
+    bf_8082_up = "8082" in bf_low and "listen" in bf_low
+    bf_has_mem = any(m in bf_low for m in ("mem:", "memory", "ram", "gi", "память"))
+    bf_has_95  = "95%" in bf_low
+    bf_has_old = "old_" in bf_low
+    bf_norm = {
+        _norm_thought_text(l) for l in bash_facts.splitlines() if l.strip()
+    }
+    kept = []
+    for line in text.splitlines():
+        if _norm_thought_text(line) in bf_norm:
+            kept.append(line)   # реальные BASH_FACTS не удаляем
+            continue
+        low = line.lower()
+        if bf_8083_up and any(m in low for m in _DIAG_STALE_8083):
+            continue
+        if bf_8082_up and any(m in low for m in _DIAG_STALE_HEART):
+            continue
+        if bf_has_mem and not bf_has_95 and any(m in low for m in _DIAG_STALE_MEM):
+            continue
+        if not bf_has_old and any(m in low for m in _DIAG_STALE_CLEANUP):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 # v39.1: узкий фильтр системных действий для conceptual/design/forensic.
 # В отличие от _OUTWARD_ACTION_MARKERS не режет «файлы/пути/проверить» и
 # слово «память» — иначе ответ на «что такое память?» был бы выпотрошен.
@@ -3544,6 +3678,8 @@ def conduct(raw_text: str) -> None:
             node_shared_ctx = _strip_identity_contamination(
                 node_shared_ctx, raw_text
             )
+            # v47: identity-firewall — срезаем stale/системные/ролевые и echo строки
+            node_shared_ctx = _identity_context_firewall(node_shared_ctx, raw_text)
         if not _pre_janus_allows_bash(_pre_janus):
             # conceptual/design/forensic: узкий фильтр — артефакты Дэвов этого
             # такта легитимно говорят о «памяти» как о понятии, не о статусе.
@@ -3866,6 +4002,16 @@ def conduct(raw_text: str) -> None:
         shared_ctx = _filtered_shared_ctx
         all_artifacts = _filtered_artifacts
 
+    # v47: diagnostic stale firewall — текущие BASH_FACTS вытесняют устаревшие
+    # утверждения (Persona-вход = all_artifacts). Реальные BASH_FACTS сохраняются.
+    if bash_facts and _pre_janus.get("diagnostic_authorized"):
+        _ds_artifacts = _diagnostic_stale_firewall(all_artifacts, bash_facts)
+        _ds_ctx = _diagnostic_stale_firewall(shared_ctx, bash_facts)
+        if _ds_artifacts != all_artifacts or _ds_ctx != shared_ctx:
+            _sys_log("ᚲ diagnostic stale claims dropped by current BASH_FACTS")
+        all_artifacts = _ds_artifacts
+        shared_ctx = _ds_ctx
+
     if (
         not _pre_janus_allows_bash(_pre_janus)
         and not _bash_facts_verify_system_status(bash_facts)
@@ -3935,10 +4081,16 @@ def conduct(raw_text: str) -> None:
             synthesis = _strip_identity_contamination(
                 _strip_outward_action_proposals(synthesis), raw_text
             )
-            if not synthesis:
+            # v47: identity final override — канон при загрязнении/дрейфе
+            if _pre_janus.get("intent") == "identity":
+                synthesis = _enforce_identity_final(synthesis, raw_text)
+            elif not synthesis:
                 synthesis = _IDENTITY_FALLBACK
         elif _pre_janus.get("mode") in ("conceptual", "design", "forensic"):
             synthesis = _strip_system_action_proposals(synthesis)
+        elif _pre_janus.get("diagnostic_authorized") and bash_facts:
+            # v47: финал предпочитает текущие BASH_FACTS, stale-claims отброшены
+            synthesis = _diagnostic_stale_firewall(synthesis, bash_facts)
         elif not _pre_janus_allows_bash(_pre_janus):
             synthesis = _strip_system_status_claims(
                 synthesis,
