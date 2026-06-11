@@ -1170,8 +1170,9 @@ class TestSemanticExtraction(unittest.TestCase):
         self.assertEqual(delta["claim"], self._IDENTITY_CLAIM)
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.55)
-        # v41/v42: 0.05 (claim) + 0.03 (урок) + 0.05 (архетип Meaningful Novelty)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.63)
+        # v41/v42/v43: 0.05 (claim) + 0.03 (урок) + 0.05 (архетип Meaningful
+        # Novelty) + 0.03 (глиф ᛇᚨ, первое появление)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.66)
 
     def test_contradiction_raises_risk_lowers_confidence(self):
         from core.janus_conductor import compute_thought_delta, apply_thought_delta
@@ -1185,9 +1186,9 @@ class TestSemanticExtraction(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["risk"], 0.2)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.4)
-        # v41/v42: -0.1 (contradiction) + 0.03 (урок) + 0.05 (архетип
-        # Dialectical Verification, первое появление)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.48)
+        # v41/v42/v43: -0.1 (contradiction) + 0.03 (урок) + 0.05 (архетип
+        # Dialectical Verification) + 0.03 (глиф ᛁᚹ, первое появление)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.51)
         self.assertTrue(
             any(o.startswith("contradiction:") for o in ts["open"])
         )
@@ -1326,11 +1327,11 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
         self.assertAlmostEqual(ts["metrics"]["risk"], risk)
-        # v41/v42: спад -0.02 (скип) + 0.03 (урок сжатия, единожды);
-        # coherence растёт ТОЛЬКО уроком (+0.03) и первым появлением
-        # архетипа Semantic Compression (+0.05), не наградой claim-пути
+        # v41/v42/v43: спад -0.02 (скип) + 0.03 (урок сжатия, единожды);
+        # coherence растёт уроком (+0.03), первым появлением архетипа
+        # Semantic Compression (+0.05) и его глифа ᛜᚨ (+0.03), не claim-путём
         self.assertAlmostEqual(ts["metrics"]["novelty"], nov - 0.02 + 0.03)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05 + 0.03)
         # Trace помечает скип, не раздуваясь artifact-телом
         self.assertIn("claim skipped: low novelty", ts["trace"][-1]["reason"])
         # Повторный скип: урок дедупится → никаких наград вообще
@@ -1355,9 +1356,9 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
-        # v41/v42: подавленный +0.1 НЕ применён; +0.03 урок сжатия
-        # и +0.05 первое появление архетипа Semantic Compression
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05)
+        # v41/v42/v43: подавленный +0.1 НЕ применён; +0.03 урок сжатия,
+        # +0.05 архетип Semantic Compression, +0.03 его глиф ᛜᚨ
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05 + 0.03)
 
     def test_rejected_claim_keeps_independent_rewards(self):
         """bash_success/approved награды живут даже при скипе парафраза."""
@@ -1645,7 +1646,8 @@ class TestThoughtArchetypes(unittest.TestCase):
         nov = ts["metrics"]["novelty"]
         apply_thought_delta(ts, self._delta(contradiction="противоречие 2"))
         self.assertEqual(ts["archetypes"][0]["count"], 3)
-        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+        # v43: архетип count==3 (+0.03) + глиф count==3 (+0.02) — со-срабатывание
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03 + 0.02)
 
     def test_apply_flow_reaches_count_five_confidence_reward(self):
         """Порог count==5 достижим в живом потоке apply_thought_delta."""
@@ -1659,8 +1661,8 @@ class TestThoughtArchetypes(unittest.TestCase):
         conf = ts["metrics"]["confidence"]
         apply_thought_delta(ts, self._delta(contradiction="противоречие 4"))
         self.assertEqual(ts["archetypes"][0]["count"], 5)
-        # -0.1 (contradiction-open) + 0.03 (порог архетипа count==5)
-        self.assertAlmostEqual(ts["metrics"]["confidence"], conf - 0.1 + 0.03)
+        # -0.1 (contradiction-open) + 0.03 (архетип count==5) + 0.02 (глиф count==5)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf - 0.1 + 0.03 + 0.02)
         self.assertLessEqual(len(ts["lessons"]), 5)
 
     def test_cap_full_new_lesson_does_not_create_archetype(self):
@@ -1706,10 +1708,11 @@ class TestThoughtArchetypes(unittest.TestCase):
         ts = self._state()
         coh = ts["metrics"]["coherence"]
         _register_archetype(ts, _LESSON_REFLECTIVE)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05)
-        # Второе появление — без coherence-награды
+        # v43: архетип +0.05 + первое появление глифа ᛉᚱ +0.03
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05 + 0.03)
+        # Второе появление — без coherence-награды (ни архетип, ни глиф)
         _register_archetype(ts, _LESSON_REFLECTIVE)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05 + 0.03)
 
     def test_count_three_rewards_novelty(self):
         from core.janus_conductor import _register_archetype, _LESSON_UNVERIFIED
@@ -1718,9 +1721,10 @@ class TestThoughtArchetypes(unittest.TestCase):
         _register_archetype(ts, _LESSON_UNVERIFIED)
         nov = ts["metrics"]["novelty"]
         _register_archetype(ts, _LESSON_UNVERIFIED)   # count → 3
-        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+        # v43: архетип count==3 (+0.03) + глиф count==3 (+0.02)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03 + 0.02)
         _register_archetype(ts, _LESSON_UNVERIFIED)   # count → 4, без награды
-        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03 + 0.02)
 
     def test_count_five_rewards_confidence(self):
         from core.janus_conductor import _register_archetype, _LESSON_DESIGN
@@ -1730,7 +1734,8 @@ class TestThoughtArchetypes(unittest.TestCase):
         conf = ts["metrics"]["confidence"]
         _register_archetype(ts, _LESSON_DESIGN)       # count → 5
         self.assertEqual(ts["archetypes"][0]["count"], 5)
-        self.assertAlmostEqual(ts["metrics"]["confidence"], conf + 0.03)
+        # v43: архетип count==5 (+0.03) + глиф count==5 (+0.02)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf + 0.03 + 0.02)
 
     def test_summary_includes_max_two_archetypes(self):
         from core.janus_conductor import (
@@ -1782,6 +1787,193 @@ class TestThoughtArchetypes(unittest.TestCase):
         _dyad_src = inspect.getsource(jc.janus_dyad).lower()
         self.assertNotIn("archetype", _dyad_src)
         self.assertNotIn("архетип", _dyad_src)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v43: Glyph-слой — символьное сжатие архетипов внутри ThoughtState
+# ─────────────────────────────────────────────────────────────────────────────
+class TestThoughtGlyphs(unittest.TestCase):
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+        }
+        base.update(kw)
+        return base
+
+    def test_archetype_maps_to_glyph(self):
+        """Все шесть архетипов отображаются явной картой, без fuzzy."""
+        import core.janus_conductor as jc
+        expected = {
+            "Boundary Integrity":       "ᛉᚱ",
+            "Ground Before Action":     "ᚱᚲ",
+            "Dialectical Verification": "ᛁᚹ",
+            "Semantic Compression":     "ᛜᚨ",
+            "Meaningful Novelty":       "ᛇᚨ",
+            "Concrete Design":          "ᛏᚱ",
+        }
+        for name, glyph in expected.items():
+            self.assertEqual(jc._glyph_for_archetype(name), glyph)
+
+    def test_unknown_archetype_creates_no_glyph(self):
+        from core.janus_conductor import _glyph_for_archetype, _register_glyph
+        self.assertIsNone(_glyph_for_archetype("Unknown Pattern"))
+        self.assertIsNone(_glyph_for_archetype(None))
+        ts = self._state()
+        self.assertFalse(_register_glyph(ts, "Unknown Pattern"))
+        self.assertEqual(ts["glyphs"], [])
+
+    def test_glyph_created_on_archetype_creation(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(contradiction="противоречие А"))
+        self.assertEqual(
+            ts["glyphs"],
+            [{"glyph": "ᛁᚹ", "source": "Dialectical Verification", "count": 1}],
+        )
+
+    def test_glyph_count_increments_when_archetype_repeats(self):
+        from core.janus_conductor import _register_archetype, _LESSON_REFLECTIVE
+        ts = self._state()
+        for _ in range(3):
+            _register_archetype(ts, _LESSON_REFLECTIVE)
+        self.assertEqual(len(ts["glyphs"]), 1)
+        self.assertEqual(ts["glyphs"][0]["glyph"], "ᛉᚱ")
+        self.assertEqual(ts["glyphs"][0]["count"], 3)
+
+    def test_duplicate_lesson_increments_archetype_and_glyph(self):
+        """Дубль урока: урок не дублируется, архетип и глиф считают повтор."""
+        from core.janus_conductor import apply_thought_delta, _LESSON_CONTRADICTION
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(contradiction="противоречие А"))
+        apply_thought_delta(ts, self._delta(contradiction="противоречие Б"))
+        self.assertEqual(ts["lessons"].count(_LESSON_CONTRADICTION), 1)
+        self.assertEqual(ts["archetypes"][0]["count"], 2)
+        self.assertEqual(ts["glyphs"][0]["count"], 2)
+
+    def test_glyph_cap_five(self):
+        import core.janus_conductor as jc
+        ts = self._state()
+        # Шесть различных архетипов → шесть различных глифов, cap 5
+        all_archetypes = list(jc._ARCHETYPE_GLYPH_MAP)
+        results = [jc._register_glyph(ts, a) for a in all_archetypes]
+        self.assertEqual(len(ts["glyphs"]), jc.THOUGHT_MAX_GLYPHS)
+        self.assertEqual(jc.THOUGHT_MAX_GLYPHS, 5)
+        self.assertEqual(results, [True] * 5 + [False])
+
+    def test_cap_full_new_glyph_skipped(self):
+        import core.janus_conductor as jc
+        ts = self._state()
+        for a in list(jc._ARCHETYPE_GLYPH_MAP)[:5]:
+            jc._register_glyph(ts, a)
+        coh = ts["metrics"]["coherence"]
+        sixth = list(jc._ARCHETYPE_GLYPH_MAP)[5]
+        self.assertFalse(jc._register_glyph(ts, sixth))
+        self.assertEqual(len(ts["glyphs"]), 5)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
+
+    def test_cap_full_existing_glyph_increments(self):
+        import core.janus_conductor as jc
+        ts = self._state()
+        names = list(jc._ARCHETYPE_GLYPH_MAP)[:5]
+        for a in names:
+            jc._register_glyph(ts, a)
+        self.assertEqual(len(ts["glyphs"]), 5)
+        self.assertTrue(jc._register_glyph(ts, names[0]))
+        target = next(
+            g for g in ts["glyphs"]
+            if g["glyph"] == jc._ARCHETYPE_GLYPH_MAP[names[0]]
+        )
+        self.assertEqual(target["count"], 2)
+        self.assertEqual(len(ts["glyphs"]), 5)
+
+    def test_first_glyph_rewards_coherence(self):
+        from core.janus_conductor import _register_glyph
+        ts = self._state()
+        coh = ts["metrics"]["coherence"]
+        _register_glyph(ts, "Boundary Integrity")
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+        _register_glyph(ts, "Boundary Integrity")   # count 2 — без награды
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+
+    def test_glyph_count_three_rewards_novelty(self):
+        from core.janus_conductor import _register_glyph
+        ts = self._state()
+        _register_glyph(ts, "Ground Before Action")
+        _register_glyph(ts, "Ground Before Action")
+        nov = ts["metrics"]["novelty"]
+        _register_glyph(ts, "Ground Before Action")   # count → 3
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.02)
+
+    def test_glyph_count_five_rewards_confidence(self):
+        from core.janus_conductor import _register_glyph
+        ts = self._state()
+        for _ in range(4):
+            _register_glyph(ts, "Concrete Design")
+        conf = ts["metrics"]["confidence"]
+        _register_glyph(ts, "Concrete Design")        # count → 5
+        self.assertEqual(ts["glyphs"][0]["count"], 5)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf + 0.02)
+
+    def test_summary_includes_max_two_glyphs(self):
+        from core.janus_conductor import (
+            _compact_thought_state_summary, THOUGHT_SUMMARY_MAX_CHARS,
+        )
+        ts = self._state()
+        ts["glyphs"] = [
+            {"glyph": f"G{i}", "source": f"S{i}", "count": i + 1}
+            for i in range(4)
+        ]
+        summary = _compact_thought_state_summary(ts)
+        self.assertIn("glyphs:", summary)
+        self.assertIn("G3x4", summary)
+        self.assertIn("G2x3", summary)
+        self.assertNotIn("G0", summary)
+        self.assertNotIn("G1x", summary)
+        self.assertLessEqual(len(summary), THOUGHT_SUMMARY_MAX_CHARS)
+
+    def test_last_thought_state_glyphs_shape_no_artifacts(self):
+        from core.janus_conductor import (
+            apply_thought_delta, compact_thought_state, THOUGHT_GLYPH_MAXLEN,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(
+            contradiction="BIGBODYMARKER " * 50,
+        ))
+        compact = compact_thought_state(ts)
+        self.assertIn("glyphs", compact)
+        dumped = json.dumps(compact["glyphs"], ensure_ascii=False)
+        self.assertNotIn("BIGBODYMARKER", dumped)
+        for g in compact["glyphs"]:
+            self.assertEqual(set(g), {"glyph", "source", "count"})
+            self.assertLessEqual(len(g["glyph"]), THOUGHT_GLYPH_MAXLEN)
+
+    def test_glyph_layer_no_llm_chain_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._state()
+            jc._glyph_for_archetype("Boundary Integrity")
+            jc._register_glyph(ts, "Boundary Integrity")
+            jc.apply_thought_delta(ts, self._delta(contradiction="x"))
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        _dyad_src = inspect.getsource(jc.janus_dyad).lower()
+        self.assertNotIn("glyph", _dyad_src)
+        self.assertNotIn("глиф", _dyad_src)
 
 
 if __name__ == "__main__":

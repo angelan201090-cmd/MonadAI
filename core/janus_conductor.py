@@ -1597,6 +1597,9 @@ THOUGHT_LESSON_MAXLEN   = 180
 # v42: архетипы — стабильные паттерны, сжатые из повторяющихся уроков
 THOUGHT_MAX_ARCHETYPES   = 5
 THOUGHT_ARCHETYPE_MAXLEN = 120
+# v43: глифы — символьное сжатие архетипов (сжимает, не расширяет память)
+THOUGHT_MAX_GLYPHS     = 5
+THOUGHT_GLYPH_MAXLEN   = 8
 
 # Маркеры внешнего действия (bash/порты/RAM) — для introspection-ограничений.
 _THOUGHT_OUTWARD_CASE   = ("```bash", "free -h", "ss -tlnp", "RAM")
@@ -1652,6 +1655,7 @@ def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
         "constraints": [],
         "lessons":     [],
         "archetypes":  [],
+        "glyphs":      [],
         "metrics": {
             "grounding":  _clamp01(grounding),
             "coherence":  0.5,
@@ -2135,6 +2139,58 @@ def _archetype_for_lesson(lesson) -> str | None:
     return _LESSON_ARCHETYPE_MAP.get(re.sub(r"\s+", " ", str(lesson)).strip())
 
 
+# ── v43: Glyph-слой — символьное сжатие архетипов внутри ThoughtState ────────
+# Archetype → Glyph: ЯВНАЯ детерминированная карта. Это НЕ glyph_codex, НЕ
+# persistent genesis, НЕ CRYSTAL — локальное сжатие в bounded-список
+# {"glyph","source","count"} внутри ThoughtState. Слой сжимает, не расширяет:
+# глиф короче имени архетипа. Без timestamp'ов, уроков, artifact-тел.
+_ARCHETYPE_GLYPH_MAP = {
+    "Boundary Integrity":       "ᛉᚱ",   # защита + путь
+    "Ground Before Action":     "ᚱᚲ",   # путь + факт/факел
+    "Dialectical Verification": "ᛁᚹ",   # трение/боль + истина/гармония
+    "Semantic Compression":     "ᛜᚨ",   # зерно + сигнал
+    "Meaningful Novelty":       "ᛇᚨ",   # трансформация + сигнал
+    "Concrete Design":          "ᛏᚱ",   # структура/действие + путь
+}
+
+
+def _glyph_for_archetype(name) -> str | None:
+    """Имя архетипа → глиф. Только точное соответствие карте, без fuzzy."""
+    if not name:
+        return None
+    return _ARCHETYPE_GLYPH_MAP.get(str(name).strip())
+
+
+def _register_glyph(thought_state: dict, archetype_name) -> bool:
+    """Создаёт/инкрементирует глиф архетипа (cap 5). Счётчик глифа отслеживает
+    повторяемость архетипа. Награды: первое появление — coherence +0.03;
+    count==3 — novelty +0.02; count==5 — confidence +0.02. Больше ничего."""
+    glyph = _glyph_for_archetype(archetype_name)
+    if not glyph:
+        return False
+    glyph = glyph[:THOUGHT_GLYPH_MAXLEN]
+    source = str(archetype_name).strip()[:THOUGHT_ARCHETYPE_MAXLEN]
+    glyphs = thought_state.setdefault("glyphs", [])
+    entry = next((g for g in glyphs if g.get("glyph") == glyph), None)
+    rewards: list[tuple[str, float]] = []
+    if entry is None:
+        if len(glyphs) >= THOUGHT_MAX_GLYPHS:
+            return False
+        glyphs.append({"glyph": glyph, "source": source, "count": 1})
+        rewards.append(("coherence", 0.03))
+    else:
+        entry["count"] = int(entry.get("count", 0)) + 1
+        if entry["count"] == 3:
+            rewards.append(("novelty", 0.02))
+        elif entry["count"] == 5:
+            rewards.append(("confidence", 0.02))
+    metrics = thought_state.get("metrics")
+    if isinstance(metrics, dict):
+        for key, dv in rewards:
+            metrics[key] = round(_clamp01(metrics.get(key, 0.0) + dv), 4)
+    return True
+
+
 def _register_archetype(
     thought_state: dict, lesson, *, allow_create: bool = True,
 ) -> bool:
@@ -2167,6 +2223,9 @@ def _register_archetype(
     if isinstance(metrics, dict):
         for key, dv in rewards:
             metrics[key] = round(_clamp01(metrics.get(key, 0.0) + dv), 4)
+    # v43: архетип создан/инкрементирован → сжать его в глиф (счётчик глифа
+    # отслеживает повторяемость архетипа). Достигается только на success-путях.
+    _register_glyph(thought_state, name)
     return True
 
 
@@ -2347,6 +2406,15 @@ def compact_thought_state(thought_state: dict) -> dict:
             for a in (thought_state.get("archetypes") or [])[:THOUGHT_MAX_ARCHETYPES]
             if isinstance(a, dict)
         ],
+        "glyphs": [
+            {
+                "glyph":  str(g.get("glyph", ""))[:THOUGHT_GLYPH_MAXLEN],
+                "source": str(g.get("source", ""))[:THOUGHT_ARCHETYPE_MAXLEN],
+                "count":  int(g.get("count", 0)),
+            }
+            for g in (thought_state.get("glyphs") or [])[:THOUGHT_MAX_GLYPHS]
+            if isinstance(g, dict)
+        ],
         "metrics": {
             k: round(float(v), 4)
             for k, v in (thought_state.get("metrics") or {}).items()
@@ -2365,6 +2433,7 @@ THOUGHT_SUMMARY_MAX_CHARS    = 900
 THOUGHT_SUMMARY_MAX_ITEMS    = 3
 THOUGHT_SUMMARY_MAX_LESSONS  = 2
 THOUGHT_SUMMARY_MAX_ARCHETYPES = 2
+THOUGHT_SUMMARY_MAX_GLYPHS   = 2
 THOUGHT_SUMMARY_DELTA_MAXLEN = 160
 
 _THOUGHT_CONTINUITY_LINE = (
@@ -2418,6 +2487,19 @@ def _compact_thought_state_summary(
             f"{str(a.get('name', ''))[:THOUGHT_ARCHETYPE_MAXLEN]}"
             f" x{int(a.get('count', 0))}"
             for a in top
+        ))
+    glyphs = [
+        g for g in (thought_state.get("glyphs") or [])
+        if isinstance(g, dict)
+    ]
+    if glyphs:
+        top_g = sorted(
+            glyphs, key=lambda g: -int(g.get("count", 0)),
+        )[:THOUGHT_SUMMARY_MAX_GLYPHS]
+        lines.append("glyphs: " + "; ".join(
+            f"{str(g.get('glyph', ''))[:THOUGHT_GLYPH_MAXLEN]}"
+            f"x{int(g.get('count', 0))}"
+            for g in top_g
         ))
     trace = thought_state.get("trace") or []
     if trace:
@@ -3876,6 +3958,7 @@ def conduct(raw_text: str) -> None:
                 f"open={len(state['last_thought_state']['open'])} "
                 f"lessons={len(state['last_thought_state'].get('lessons') or [])} "
                 f"archetypes={len(state['last_thought_state'].get('archetypes') or [])} "
+                f"glyphs={len(state['last_thought_state'].get('glyphs') or [])} "
                 f"risk={_tm.get('risk', 0.0):.2f} "
                 f"conf={_tm.get('confidence', 0.0):.2f}"
             )
