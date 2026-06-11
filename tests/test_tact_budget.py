@@ -1170,8 +1170,8 @@ class TestSemanticExtraction(unittest.TestCase):
         self.assertEqual(delta["claim"], self._IDENTITY_CLAIM)
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.55)
-        # v41: 0.05 (claim) + 0.03 (урок «novel claims expand…»)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.58)
+        # v41/v42: 0.05 (claim) + 0.03 (урок) + 0.05 (архетип Meaningful Novelty)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.63)
 
     def test_contradiction_raises_risk_lowers_confidence(self):
         from core.janus_conductor import compute_thought_delta, apply_thought_delta
@@ -1185,8 +1185,9 @@ class TestSemanticExtraction(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["risk"], 0.2)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.4)
-        # v41: -0.1 (contradiction) + 0.03 (урок «contradictory artifacts…»)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.43)
+        # v41/v42: -0.1 (contradiction) + 0.03 (урок) + 0.05 (архетип
+        # Dialectical Verification, первое появление)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.48)
         self.assertTrue(
             any(o.startswith("contradiction:") for o in ts["open"])
         )
@@ -1325,10 +1326,11 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
         self.assertAlmostEqual(ts["metrics"]["risk"], risk)
-        # v41: спад -0.02 (скип) + 0.03 (урок сжатия, единожды);
-        # coherence растёт ТОЛЬКО уроком, не наградой claim-пути
+        # v41/v42: спад -0.02 (скип) + 0.03 (урок сжатия, единожды);
+        # coherence растёт ТОЛЬКО уроком (+0.03) и первым появлением
+        # архетипа Semantic Compression (+0.05), не наградой claim-пути
         self.assertAlmostEqual(ts["metrics"]["novelty"], nov - 0.02 + 0.03)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05)
         # Trace помечает скип, не раздуваясь artifact-телом
         self.assertIn("claim skipped: low novelty", ts["trace"][-1]["reason"])
         # Повторный скип: урок дедупится → никаких наград вообще
@@ -1353,8 +1355,9 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
-        # v41: подавленный +0.1 НЕ применён; +0.03 — только урок сжатия
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+        # v41/v42: подавленный +0.1 НЕ применён; +0.03 урок сжатия
+        # и +0.05 первое появление архетипа Semantic Compression
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03 + 0.05)
 
     def test_rejected_claim_keeps_independent_rewards(self):
         """bash_success/approved награды живут даже при скипе парафраза."""
@@ -1562,6 +1565,223 @@ class TestThoughtLessons(unittest.TestCase):
             ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
         )
         self.assertNotIn("lesson", inspect.getsource(jc.janus_dyad))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v42: Archetype-слой — сжатие повторяющихся уроков в стабильные паттерны
+# ─────────────────────────────────────────────────────────────────────────────
+class TestThoughtArchetypes(unittest.TestCase):
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+        }
+        base.update(kw)
+        return base
+
+    def test_lesson_maps_to_archetype(self):
+        """Все шесть уроков отображаются явной картой, без fuzzy."""
+        import core.janus_conductor as jc
+        expected = {
+            jc._LESSON_REFLECTIVE:    "Boundary Integrity",
+            jc._LESSON_UNVERIFIED:    "Ground Before Action",
+            jc._LESSON_CONTRADICTION: "Dialectical Verification",
+            jc._LESSON_COMPRESSION:   "Semantic Compression",
+            jc._LESSON_NOVELTY:       "Meaningful Novelty",
+            jc._LESSON_DESIGN:        "Concrete Design",
+        }
+        for lesson, name in expected.items():
+            self.assertEqual(jc._archetype_for_lesson(lesson), name)
+        self.assertIsNone(jc._archetype_for_lesson("произвольный текст"))
+        self.assertIsNone(jc._archetype_for_lesson(None))
+
+    def test_archetype_created_on_lesson_add(self):
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(contradiction="противоречие А"))
+        self.assertEqual(
+            ts["archetypes"],
+            [{"name": "Dialectical Verification", "count": 1}],
+        )
+
+    def test_count_increments(self):
+        from core.janus_conductor import _register_archetype, _LESSON_REFLECTIVE
+        ts = self._state()
+        for _ in range(3):
+            self.assertTrue(_register_archetype(ts, _LESSON_REFLECTIVE))
+        self.assertEqual(len(ts["archetypes"]), 1)
+        self.assertEqual(ts["archetypes"][0]["count"], 3)
+
+    def test_duplicate_lesson_increments_archetype_not_lessons(self):
+        """v42.1: дубль урока — урок не дублируется, архетип считает повтор."""
+        from core.janus_conductor import (
+            apply_thought_delta, _LESSON_CONTRADICTION,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(contradiction="противоречие А"))
+        apply_thought_delta(ts, self._delta(contradiction="противоречие Б"))
+        self.assertEqual(ts["lessons"].count(_LESSON_CONTRADICTION), 1)
+        self.assertEqual(ts["archetypes"][0]["count"], 2)
+
+    def test_apply_flow_reaches_count_three_novelty_reward(self):
+        """Порог count==3 достижим в живом потоке apply_thought_delta."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        for i in range(2):
+            apply_thought_delta(
+                ts, self._delta(contradiction=f"противоречие {i}"),
+            )
+        self.assertEqual(ts["archetypes"][0]["count"], 2)
+        nov = ts["metrics"]["novelty"]
+        apply_thought_delta(ts, self._delta(contradiction="противоречие 2"))
+        self.assertEqual(ts["archetypes"][0]["count"], 3)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+
+    def test_apply_flow_reaches_count_five_confidence_reward(self):
+        """Порог count==5 достижим в живом потоке apply_thought_delta."""
+        from core.janus_conductor import apply_thought_delta
+        ts = self._state()
+        for i in range(4):
+            apply_thought_delta(
+                ts, self._delta(contradiction=f"противоречие {i}"),
+            )
+        self.assertEqual(ts["archetypes"][0]["count"], 4)
+        conf = ts["metrics"]["confidence"]
+        apply_thought_delta(ts, self._delta(contradiction="противоречие 4"))
+        self.assertEqual(ts["archetypes"][0]["count"], 5)
+        # -0.1 (contradiction-open) + 0.03 (порог архетипа count==5)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf - 0.1 + 0.03)
+        self.assertLessEqual(len(ts["lessons"]), 5)
+
+    def test_cap_full_new_lesson_does_not_create_archetype(self):
+        """Cap уроков полон: новый урок не входит, шестого паттерна нет."""
+        from core.janus_conductor import _add_lesson, _LESSON_REFLECTIVE
+        ts = self._state()
+        for i in range(5):
+            self.assertTrue(_add_lesson(ts, f"урок {i} некартированный"))
+        coh = ts["metrics"]["coherence"]
+        self.assertFalse(_add_lesson(ts, _LESSON_REFLECTIVE))
+        self.assertEqual(len(ts["lessons"]), 5)
+        self.assertEqual(ts["archetypes"], [])
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
+
+    def test_cap_full_duplicate_lesson_still_increments_archetype(self):
+        """Cap полон, урок-дубль картирован → существующий архетип растёт."""
+        from core.janus_conductor import _add_lesson, _LESSON_CONTRADICTION
+        ts = self._state()
+        self.assertTrue(_add_lesson(ts, _LESSON_CONTRADICTION))
+        for i in range(4):
+            self.assertTrue(_add_lesson(ts, f"урок {i} некартированный"))
+        self.assertEqual(len(ts["lessons"]), 5)
+        self.assertFalse(_add_lesson(ts, _LESSON_CONTRADICTION))
+        self.assertEqual(len(ts["lessons"]), 5)
+        self.assertEqual(ts["archetypes"][0]["count"], 2)
+        self.assertEqual(len(ts["archetypes"]), 1)
+
+    def test_archetype_cap_five(self):
+        import core.janus_conductor as jc
+        ts = self._state()
+        all_lessons = (
+            jc._LESSON_REFLECTIVE, jc._LESSON_UNVERIFIED,
+            jc._LESSON_CONTRADICTION, jc._LESSON_COMPRESSION,
+            jc._LESSON_NOVELTY, jc._LESSON_DESIGN,
+        )
+        results = [jc._register_archetype(ts, l) for l in all_lessons]
+        self.assertEqual(len(ts["archetypes"]), jc.THOUGHT_MAX_ARCHETYPES)
+        self.assertEqual(jc.THOUGHT_MAX_ARCHETYPES, 5)
+        self.assertEqual(results, [True] * 5 + [False])
+
+    def test_first_appearance_rewards_coherence(self):
+        from core.janus_conductor import _register_archetype, _LESSON_REFLECTIVE
+        ts = self._state()
+        coh = ts["metrics"]["coherence"]
+        _register_archetype(ts, _LESSON_REFLECTIVE)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05)
+        # Второе появление — без coherence-награды
+        _register_archetype(ts, _LESSON_REFLECTIVE)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.05)
+
+    def test_count_three_rewards_novelty(self):
+        from core.janus_conductor import _register_archetype, _LESSON_UNVERIFIED
+        ts = self._state()
+        _register_archetype(ts, _LESSON_UNVERIFIED)
+        _register_archetype(ts, _LESSON_UNVERIFIED)
+        nov = ts["metrics"]["novelty"]
+        _register_archetype(ts, _LESSON_UNVERIFIED)   # count → 3
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+        _register_archetype(ts, _LESSON_UNVERIFIED)   # count → 4, без награды
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov + 0.03)
+
+    def test_count_five_rewards_confidence(self):
+        from core.janus_conductor import _register_archetype, _LESSON_DESIGN
+        ts = self._state()
+        for _ in range(4):
+            _register_archetype(ts, _LESSON_DESIGN)
+        conf = ts["metrics"]["confidence"]
+        _register_archetype(ts, _LESSON_DESIGN)       # count → 5
+        self.assertEqual(ts["archetypes"][0]["count"], 5)
+        self.assertAlmostEqual(ts["metrics"]["confidence"], conf + 0.03)
+
+    def test_summary_includes_max_two_archetypes(self):
+        from core.janus_conductor import (
+            _compact_thought_state_summary, THOUGHT_SUMMARY_MAX_CHARS,
+        )
+        ts = self._state()
+        ts["archetypes"] = [
+            {"name": f"ARCH_{i}", "count": i + 1} for i in range(4)
+        ]
+        summary = _compact_thought_state_summary(ts)
+        # Два с наибольшим count
+        self.assertIn("ARCH_3 x4", summary)
+        self.assertIn("ARCH_2 x3", summary)
+        self.assertNotIn("ARCH_0", summary)
+        self.assertNotIn("ARCH_1", summary)
+        self.assertLessEqual(len(summary), THOUGHT_SUMMARY_MAX_CHARS)
+
+    def test_no_artifact_bodies_in_archetypes(self):
+        from core.janus_conductor import (
+            apply_thought_delta, compact_thought_state,
+            THOUGHT_ARCHETYPE_MAXLEN,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(
+            contradiction="BIGBODYMARKER " * 50,
+        ))
+        compact = compact_thought_state(ts)
+        self.assertIn("archetypes", compact)
+        dumped = json.dumps(compact["archetypes"], ensure_ascii=False)
+        self.assertNotIn("BIGBODYMARKER", dumped)
+        for arch in compact["archetypes"]:
+            self.assertEqual(set(arch), {"name", "count"})
+            self.assertLessEqual(len(arch["name"]), THOUGHT_ARCHETYPE_MAXLEN)
+
+    def test_archetype_layer_no_llm_chain_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._state()
+            jc._archetype_for_lesson(jc._LESSON_REFLECTIVE)
+            jc._register_archetype(ts, jc._LESSON_REFLECTIVE)
+            apply_delta = self._delta(contradiction="x")
+            jc.apply_thought_delta(ts, apply_delta)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        _dyad_src = inspect.getsource(jc.janus_dyad).lower()
+        self.assertNotIn("archetype", _dyad_src)
+        self.assertNotIn("архетип", _dyad_src)
 
 
 if __name__ == "__main__":

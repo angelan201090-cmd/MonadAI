@@ -1594,6 +1594,9 @@ THOUGHT_FIELD_MAXLEN    = 160
 # v41: уроки такта — компактные выводы из паттернов мысли (без artifact-тел)
 THOUGHT_MAX_LESSONS     = 5
 THOUGHT_LESSON_MAXLEN   = 180
+# v42: архетипы — стабильные паттерны, сжатые из повторяющихся уроков
+THOUGHT_MAX_ARCHETYPES   = 5
+THOUGHT_ARCHETYPE_MAXLEN = 120
 
 # Маркеры внешнего действия (bash/порты/RAM) — для introspection-ограничений.
 _THOUGHT_OUTWARD_CASE   = ("```bash", "free -h", "ss -tlnp", "RAM")
@@ -1648,6 +1651,7 @@ def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
         "open":        [],
         "constraints": [],
         "lessons":     [],
+        "archetypes":  [],
         "metrics": {
             "grounding":  _clamp01(grounding),
             "coherence":  0.5,
@@ -2109,25 +2113,91 @@ def _extract_lesson_candidate(
     return None
 
 
+# ── v42: Archetype-слой — сжатие повторяющихся уроков в стабильные паттерны ──
+# Lesson → Archetype: ЯВНАЯ детерминированная карта (точный матч по
+# фиксированным формулировкам уроков). Без LLM, без fuzzy, без эмбеддингов.
+# Архетип — не новый store: bounded-список {"name", "count"} внутри
+# ThoughtState; без timestamp'ов, без artifact-тел, без сырых уроков.
+_LESSON_ARCHETYPE_MAP = {
+    _LESSON_REFLECTIVE:    "Boundary Integrity",
+    _LESSON_UNVERIFIED:    "Ground Before Action",
+    _LESSON_CONTRADICTION: "Dialectical Verification",
+    _LESSON_COMPRESSION:   "Semantic Compression",
+    _LESSON_NOVELTY:       "Meaningful Novelty",
+    _LESSON_DESIGN:        "Concrete Design",
+}
+
+
+def _archetype_for_lesson(lesson) -> str | None:
+    """Урок → имя архетипа. Только точное соответствие карте."""
+    if not lesson:
+        return None
+    return _LESSON_ARCHETYPE_MAP.get(re.sub(r"\s+", " ", str(lesson)).strip())
+
+
+def _register_archetype(
+    thought_state: dict, lesson, *, allow_create: bool = True,
+) -> bool:
+    """Инкремент счётчика архетипа урока; создание при отсутствии (cap 5).
+
+    allow_create=False — только инкремент существующего (для переполненного
+    cap уроков: новый паттерн не создаётся, повтор существующего считается).
+    Дедуп по имени. Награды: первое появление — coherence +0.05;
+    count==3 — novelty +0.03; count==5 — confidence +0.03. Больше ничего.
+    """
+    name = _archetype_for_lesson(lesson)
+    if not name:
+        return False
+    name = name[:THOUGHT_ARCHETYPE_MAXLEN]
+    archetypes = thought_state.setdefault("archetypes", [])
+    entry = next((a for a in archetypes if a.get("name") == name), None)
+    rewards: list[tuple[str, float]] = []
+    if entry is None:
+        if not allow_create or len(archetypes) >= THOUGHT_MAX_ARCHETYPES:
+            return False
+        archetypes.append({"name": name, "count": 1})
+        rewards.append(("coherence", 0.05))
+    else:
+        entry["count"] = int(entry.get("count", 0)) + 1
+        if entry["count"] == 3:
+            rewards.append(("novelty", 0.03))
+        elif entry["count"] == 5:
+            rewards.append(("confidence", 0.03))
+    metrics = thought_state.get("metrics")
+    if isinstance(metrics, dict):
+        for key, dv in rewards:
+            metrics[key] = round(_clamp01(metrics.get(key, 0.0) + dv), 4)
+    return True
+
+
 def _add_lesson(thought_state: dict, lesson) -> bool:
-    """Добавляет урок: нормализация, дедуп, cap 5. Награда метрик ТОЛЬКО
-    при реальном добавлении: coherence +0.03, novelty +0.03."""
+    """Добавляет урок: нормализация, дедуп, cap 5.
+
+    Новый урок: запись + награда (coherence +0.03, novelty +0.03) + архетип.
+    v42.1: дубль урока — повторение паттерна: урок и lesson-награда НЕ
+    повторяются, но счётчик архетипа растёт → пороговые награды count==3/5
+    достижимы в живом потоке apply_thought_delta.
+    Переполненный cap уроков: новый урок не входит, создание архетипа
+    запрещено, инкремент существующего архетипа разрешён.
+    """
     if not lesson:
         return False
     text = re.sub(r"\s+", " ", str(lesson)).strip()[:THOUGHT_LESSON_MAXLEN]
     if not text:
         return False
     lessons = thought_state.setdefault("lessons", [])
-    if (
-        len(lessons) >= THOUGHT_MAX_LESSONS
-        or _is_near_duplicate_thought(text, lessons)
-    ):
+    if _is_near_duplicate_thought(text, lessons):
+        _register_archetype(thought_state, text)
+        return False
+    if len(lessons) >= THOUGHT_MAX_LESSONS:
+        _register_archetype(thought_state, text, allow_create=False)
         return False
     lessons.append(text)
     metrics = thought_state.get("metrics")
     if isinstance(metrics, dict):
         for key in ("coherence", "novelty"):
             metrics[key] = round(_clamp01(metrics.get(key, 0.0) + 0.03), 4)
+    _register_archetype(thought_state, text)
     return True
 
 
@@ -2269,6 +2339,14 @@ def compact_thought_state(thought_state: dict) -> dict:
             str(l)[:THOUGHT_LESSON_MAXLEN]
             for l in (thought_state.get("lessons") or [])[:THOUGHT_MAX_LESSONS]
         ],
+        "archetypes": [
+            {
+                "name":  str(a.get("name", ""))[:THOUGHT_ARCHETYPE_MAXLEN],
+                "count": int(a.get("count", 0)),
+            }
+            for a in (thought_state.get("archetypes") or [])[:THOUGHT_MAX_ARCHETYPES]
+            if isinstance(a, dict)
+        ],
         "metrics": {
             k: round(float(v), 4)
             for k, v in (thought_state.get("metrics") or {}).items()
@@ -2286,6 +2364,7 @@ def compact_thought_state(thought_state: dict) -> dict:
 THOUGHT_SUMMARY_MAX_CHARS    = 900
 THOUGHT_SUMMARY_MAX_ITEMS    = 3
 THOUGHT_SUMMARY_MAX_LESSONS  = 2
+THOUGHT_SUMMARY_MAX_ARCHETYPES = 2
 THOUGHT_SUMMARY_DELTA_MAXLEN = 160
 
 _THOUGHT_CONTINUITY_LINE = (
@@ -2326,6 +2405,20 @@ def _compact_thought_state_summary(
     if lessons:
         lines.append("lessons:")
         lines.extend(f"- {str(l)[:THOUGHT_LESSON_MAXLEN]}" for l in lessons)
+    archetypes = [
+        a for a in (thought_state.get("archetypes") or [])
+        if isinstance(a, dict)
+    ]
+    if archetypes:
+        # стабильная сортировка: при равных count — порядок появления
+        top = sorted(
+            archetypes, key=lambda a: -int(a.get("count", 0)),
+        )[:THOUGHT_SUMMARY_MAX_ARCHETYPES]
+        lines.append("archetypes: " + "; ".join(
+            f"{str(a.get('name', ''))[:THOUGHT_ARCHETYPE_MAXLEN]}"
+            f" x{int(a.get('count', 0))}"
+            for a in top
+        ))
     trace = thought_state.get("trace") or []
     if trace:
         last = trace[-1]
@@ -3782,6 +3875,7 @@ def conduct(raw_text: str) -> None:
                 f"claims={len(state['last_thought_state']['claims'])} "
                 f"open={len(state['last_thought_state']['open'])} "
                 f"lessons={len(state['last_thought_state'].get('lessons') or [])} "
+                f"archetypes={len(state['last_thought_state'].get('archetypes') or [])} "
                 f"risk={_tm.get('risk', 0.0):.2f} "
                 f"conf={_tm.get('confidence', 0.0):.2f}"
             )
