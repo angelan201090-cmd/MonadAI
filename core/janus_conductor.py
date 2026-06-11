@@ -1759,6 +1759,7 @@ _ECHO_NOISE_MARKERS = (
     "thought_state", "metrics:", "intent=", "question=", "last_delta",
     "grounding=", "пиши «боль", "план_януса", "твоя_микрозадача",
     "shared_experience", "интро_гипотеза",
+    "glyph_pressure", "[glyph_pressure]",
 )
 _CLAIM_SHELL_RE = re.compile(
     r"```|\$\s|/home/|/mnt/|/etc/|\.sh\b|\.py\b|\bbash\b|скрипт|script"
@@ -2235,6 +2236,80 @@ def _glyph_for_archetype(name) -> str | None:
     return _ARCHETYPE_GLYPH_MAP.get(str(name).strip())
 
 
+# ── v45.0: Glyph Pressure — тактовое внимание, НЕ память и НЕ метрика ──────────
+# Ось внимания: Glyph → transient pressure → подсказка в ЛОКАЛЬНЫЙ контекст Дэвы.
+# Давление выводится из текущих glyphs[*].count (log1p-нормализация — сжимает,
+# не расширяет). Ничего не пишется: ни в метрики, ни в last_thought_state, ни в
+# WARM/CRYSTAL. Директивы фиксированы — без генерации, без LLM, без artifact-тел.
+_GLYPH_PRESSURE_MIN_COUNT = 2
+_GLYPH_PRESSURE_MIN_SHARE = 0.40
+_GLYPH_PRESSURE_DIRECTIVES = {
+    "ᛉᚱ": "Boundary pressure: protect boundaries; do not propose outward action.",
+    "ᚱᚲ": "Grounding pressure: verify before asserting.",
+    "ᛁᚹ": "Dialectic pressure: expose contradiction before synthesis.",
+    "ᛜᚨ": "Compression pressure: compress into existing claims; avoid paraphrase.",
+    "ᛇᚨ": "Novelty pressure: add semantic difference, not new wording.",
+    "ᛏᚱ": "Design pressure: give concrete structure, constraints, and data flow.",
+}
+
+
+def _glyph_pressure(thought_state: dict) -> dict[str, float]:
+    """Транзиентное давление глифов: log1p(count_i) / Σ log1p(count_j).
+
+    Чистая функция: читает glyphs (count>0), не мутирует, не персистит.
+    Пусто, если валидных глифов нет. Сжимает (log1p), а не линейно.
+    """
+    glyphs = (thought_state.get("glyphs") or []) if isinstance(thought_state, dict) else []
+    weights: list[tuple[str, float]] = []
+    for g in glyphs:
+        if not isinstance(g, dict):
+            continue
+        try:
+            count = int(g.get("count", 0))
+        except (TypeError, ValueError):
+            continue
+        glyph = str(g.get("glyph", ""))
+        if count > 0 and glyph:
+            weights.append((glyph, math.log1p(count)))
+    total = sum(w for _, w in weights)
+    if total <= 0.0:
+        return {}
+    return {glyph: w / total for glyph, w in weights}
+
+
+def _dominant_glyph_directive(thought_state: dict) -> str | None:
+    """Доминирующий по давлению глиф → фиксированная директива (≤160).
+
+    Гейт: count ≥ _GLYPH_PRESSURE_MIN_COUNT И давление ≥ _GLYPH_PRESSURE_MIN_SHARE.
+    Стабильный тай-брейк — порядок появления в списке glyphs. Неизвестный глиф → None.
+    """
+    pressure = _glyph_pressure(thought_state)
+    if not pressure:
+        return None
+    glyphs = (thought_state.get("glyphs") or []) if isinstance(thought_state, dict) else []
+    counts = {
+        str(g.get("glyph", "")): int(g.get("count", 0))
+        for g in glyphs
+        if isinstance(g, dict)
+    }
+    # Доминирующий по давлению; при равенстве — первый по порядку списка glyphs.
+    dominant = max(
+        ((str(g.get("glyph", "")) for g in glyphs if isinstance(g, dict))),
+        key=lambda gl: pressure.get(gl, 0.0),
+        default=None,
+    )
+    if not dominant:
+        return None
+    if counts.get(dominant, 0) < _GLYPH_PRESSURE_MIN_COUNT:
+        return None
+    if pressure.get(dominant, 0.0) < _GLYPH_PRESSURE_MIN_SHARE:
+        return None
+    directive = _GLYPH_PRESSURE_DIRECTIVES.get(dominant)
+    if not directive:
+        return None
+    return directive[:160]
+
+
 def _register_glyph(thought_state: dict, archetype_name) -> bool:
     """Создаёт/инкрементирует глиф архетипа (cap 5). Счётчик глифа отслеживает
     повторяемость архетипа. Награды: первое появление — coherence +0.03;
@@ -2605,7 +2680,13 @@ def _enrich_deva_context_with_thought_state(
     summary = _compact_thought_state_summary(thought_state)
     if not summary:
         return node_shared_ctx
-    return f"{node_shared_ctx}\n\n{summary}\n{_THOUGHT_CONTINUITY_LINE}"
+    enriched = f"{node_shared_ctx}\n\n{summary}\n{_THOUGHT_CONTINUITY_LINE}"
+    # v45.0: транзиентная подсказка давления глифа — ТОЛЬКО в локальный контекст
+    # Дэвы. Не пишется в shared_memory/state/last_thought_state/summary/Janus.
+    directive = _dominant_glyph_directive(thought_state)
+    if directive:
+        enriched = f"{enriched}\n[GLYPH_PRESSURE] {directive}"
+    return enriched
 
 
 def _generate_deva_roles(raw_text: str, devas_by_center: dict, note_name: str) -> dict:

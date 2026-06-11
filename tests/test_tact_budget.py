@@ -2164,5 +2164,186 @@ class TestEvidenceLedger(unittest.TestCase):
         self.assertNotIn("свидетельств", src)
 
 
+class TestGlyphPressure(unittest.TestCase):
+    """v45.0: транзиентная подсказка давления глифа — внимание, не память."""
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import _pre_janus_frame, make_thought_seed, make_thought_state
+        return make_thought_state(make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5)
+
+    def _ts_with_glyphs(self, *pairs):
+        """pairs: (glyph, count). Порядок сохраняется."""
+        ts = self._state()
+        ts["glyphs"] = [
+            {"glyph": g, "source": "X", "count": c} for g, c in pairs
+        ]
+        return ts
+
+    # 1. empty -> {}
+    def test_pressure_empty(self):
+        from core.janus_conductor import _glyph_pressure
+        self.assertEqual(_glyph_pressure(self._state()), {})
+        self.assertEqual(_glyph_pressure(self._ts_with_glyphs(("ᛉᚱ", 0))), {})
+
+    # 2. log1p normalization sums to ~1.0
+    def test_pressure_sums_to_one(self):
+        from core.janus_conductor import _glyph_pressure
+        p = _glyph_pressure(self._ts_with_glyphs(("ᛉᚱ", 3), ("ᚱᚲ", 1), ("ᛁᚹ", 2)))
+        self.assertAlmostEqual(sum(p.values()), 1.0, places=9)
+        self.assertEqual(set(p), {"ᛉᚱ", "ᚱᚲ", "ᛁᚹ"})
+
+    # 3. linear and log1p differ on uneven counts
+    def test_log1p_differs_from_linear(self):
+        from core.janus_conductor import _glyph_pressure
+        ts = self._ts_with_glyphs(("ᛉᚱ", 5), ("ᚱᚲ", 1))
+        p = _glyph_pressure(ts)
+        linear = 5 / 6
+        self.assertNotAlmostEqual(p["ᛉᚱ"], linear, places=3)
+        # log1p compresses the leader below its linear share
+        self.assertLess(p["ᛉᚱ"], linear)
+
+    # 4. below count gate -> None
+    def test_below_count_gate_none(self):
+        from core.janus_conductor import _dominant_glyph_directive
+        # single glyph count=1: share=1.0 but count<2
+        self.assertIsNone(_dominant_glyph_directive(self._ts_with_glyphs(("ᛉᚱ", 1))))
+
+    # 4b. below share gate -> None
+    def test_below_share_gate_none(self):
+        from core.janus_conductor import _dominant_glyph_directive, _glyph_pressure
+        # many equal glyphs: each share well below 0.40, counts >=2
+        ts = self._ts_with_glyphs(
+            ("ᛉᚱ", 2), ("ᚱᚲ", 2), ("ᛁᚹ", 2), ("ᛜᚨ", 2),
+        )
+        p = _glyph_pressure(ts)
+        self.assertTrue(all(v < 0.40 for v in p.values()))
+        self.assertIsNone(_dominant_glyph_directive(ts))
+
+    # 5. dominant known glyph returns correct directive
+    def test_dominant_known_glyph_directive(self):
+        from core.janus_conductor import _dominant_glyph_directive, _GLYPH_PRESSURE_DIRECTIVES
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4), ("ᚱᚲ", 1))
+        self.assertEqual(
+            _dominant_glyph_directive(ts),
+            _GLYPH_PRESSURE_DIRECTIVES["ᛏᚱ"],
+        )
+
+    # 6. unknown glyph returns None
+    def test_unknown_glyph_none(self):
+        from core.janus_conductor import _dominant_glyph_directive
+        ts = self._ts_with_glyphs(("ZZ", 5))
+        self.assertIsNone(_dominant_glyph_directive(ts))
+
+    # 7. stable tie uses glyph list order
+    def test_stable_tie_list_order(self):
+        from core.janus_conductor import _dominant_glyph_directive, _GLYPH_PRESSURE_DIRECTIVES
+        # equal counts → equal pressure (0.5 each ≥ 0.40, count 3 ≥ 2);
+        # first in list wins
+        ts = self._ts_with_glyphs(("ᛇᚨ", 3), ("ᛏᚱ", 3))
+        self.assertEqual(
+            _dominant_glyph_directive(ts),
+            _GLYPH_PRESSURE_DIRECTIVES["ᛇᚨ"],
+        )
+        ts2 = self._ts_with_glyphs(("ᛏᚱ", 3), ("ᛇᚨ", 3))
+        self.assertEqual(
+            _dominant_glyph_directive(ts2),
+            _GLYPH_PRESSURE_DIRECTIVES["ᛏᚱ"],
+        )
+
+    # 8. directive injected into Deva context
+    def test_directive_injected_into_deva_context(self):
+        from core.janus_conductor import _enrich_deva_context_with_thought_state
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4))
+        out = _enrich_deva_context_with_thought_state("BASE_CTX", ts)
+        self.assertIn("[GLYPH_PRESSURE]", out)
+        self.assertIn("Design pressure", out)
+
+    # 8b. no directive below gate → no GLYPH_PRESSURE line
+    def test_no_directive_no_line(self):
+        from core.janus_conductor import _enrich_deva_context_with_thought_state
+        ts = self._ts_with_glyphs(("ᛏᚱ", 1))
+        out = _enrich_deva_context_with_thought_state("BASE_CTX", ts)
+        self.assertNotIn("[GLYPH_PRESSURE]", out)
+
+    # 9. directive not in compact_thought_state
+    def test_directive_not_in_compact_thought_state(self):
+        from core.janus_conductor import compact_thought_state
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4))
+        dumped = json.dumps(compact_thought_state(ts), ensure_ascii=False)
+        self.assertNotIn("GLYPH_PRESSURE", dumped)
+        self.assertNotIn("Design pressure", dumped)
+        self.assertNotIn("pressure", dumped.lower())
+
+    # 10. directive not in last_thought_state shape (compact == last_thought_state)
+    def test_directive_not_in_last_thought_state(self):
+        from core.janus_conductor import compact_thought_state
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4))
+        compact = compact_thought_state(ts)
+        self.assertNotIn("glyph_pressure", compact)
+        self.assertNotIn("pressure", compact)
+
+    # 11. directive not in final Janus summary path
+    def test_directive_not_in_thought_summary(self):
+        from core.janus_conductor import _compact_thought_state_summary
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4))
+        summary = _compact_thought_state_summary(ts)
+        self.assertNotIn("GLYPH_PRESSURE", summary)
+        self.assertNotIn("Design pressure", summary)
+
+    # 12. no metric changes from pressure
+    def test_no_metric_changes_from_pressure(self):
+        from core.janus_conductor import (
+            _glyph_pressure, _dominant_glyph_directive,
+            _enrich_deva_context_with_thought_state,
+        )
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4), ("ᚱᚲ", 2))
+        before = dict(ts["metrics"])
+        _glyph_pressure(ts)
+        _dominant_glyph_directive(ts)
+        _enrich_deva_context_with_thought_state("CTX", ts)
+        self.assertEqual(ts["metrics"], before)
+
+    # 13. no mutation of glyphs/thought_state from pressure
+    def test_no_mutation_from_pressure(self):
+        from core.janus_conductor import _glyph_pressure, _dominant_glyph_directive
+        ts = self._ts_with_glyphs(("ᛏᚱ", 4), ("ᚱᚲ", 2))
+        import copy
+        snapshot = copy.deepcopy(ts)
+        _glyph_pressure(ts)
+        _dominant_glyph_directive(ts)
+        self.assertEqual(ts, snapshot)
+
+    # 14. no LLM calls
+    def test_no_llm_calls(self):
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._ts_with_glyphs(("ᛏᚱ", 4))
+            jc._glyph_pressure(ts)
+            jc._dominant_glyph_directive(ts)
+            jc._enrich_deva_context_with_thought_state("CTX", ts)
+        http_post.assert_not_called()
+
+    # 15. FOHAT_CHAIN unchanged
+    def test_fohat_chain_unchanged(self):
+        import core.janus_conductor as jc
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+
+    # 16. janus_dyad unchanged (no pressure references)
+    def test_janus_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        src = inspect.getsource(jc.janus_dyad).lower()
+        self.assertNotIn("glyph_pressure", src)
+        self.assertNotIn("pressure", src)
+
+    # 17. anti-echo: glyph_pressure marker present in echo-noise list
+    def test_glyph_pressure_in_echo_noise(self):
+        import core.janus_conductor as jc
+        self.assertIn("glyph_pressure", jc._ECHO_NOISE_MARKERS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
