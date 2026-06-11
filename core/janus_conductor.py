@@ -1591,6 +1591,9 @@ THOUGHT_MAX_OPEN        = 7
 THOUGHT_MAX_CONSTRAINTS = 7
 THOUGHT_MAX_TRACE       = 12
 THOUGHT_FIELD_MAXLEN    = 160
+# v41: уроки такта — компактные выводы из паттернов мысли (без artifact-тел)
+THOUGHT_MAX_LESSONS     = 5
+THOUGHT_LESSON_MAXLEN   = 180
 
 # Маркеры внешнего действия (bash/порты/RAM) — для introspection-ограничений.
 _THOUGHT_OUTWARD_CASE   = ("```bash", "free -h", "ss -tlnp", "RAM")
@@ -1644,6 +1647,7 @@ def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
         "claims":      [],
         "open":        [],
         "constraints": [],
+        "lessons":     [],
         "metrics": {
             "grounding":  _clamp01(grounding),
             "coherence":  0.5,
@@ -2047,6 +2051,86 @@ def _compact_delta(delta: dict) -> dict:
     }
 
 
+# ── v41: Lesson-слой — детерминированная экстракция уроков из ThoughtState ───
+# Claim/Open/Constraint/Contradiction → LessonCandidate. Уроки компактны,
+# ограничены (≤5 × ≤180 симв.), фиксированные формулировки — artifact-тела
+# не попадают. Без LLM.
+_LESSON_REFLECTIVE = "Reflective modes must suppress outward execution."
+_LESSON_UNVERIFIED = "Unverified claims must remain open until grounded."
+_LESSON_CONTRADICTION = (
+    "Contradictory artifacts require another pass or Shadow veto."
+)
+_LESSON_COMPRESSION = (
+    "Repeated formulations should compress into existing claims."
+)
+_LESSON_NOVELTY = (
+    "Novel claims expand ThoughtState only when they add semantic difference."
+)
+_LESSON_DESIGN = (
+    "Design tasks require concrete structure, constraints, and data flow."
+)
+_LESSON_HIGH_NOVELTY = 0.80
+_LESSON_DESIGN_OPEN_MARKERS = (
+    "слишком абстрактн", "недостаточно структур",
+    "too abstract", "insufficient structure",
+)
+
+
+def _extract_lesson_candidate(
+    thought_state: dict,
+    delta: dict,
+    pre_janus_frame: dict,
+    *,
+    claim_added: bool = False,
+    claim_novelty: float | None = None,
+) -> str | None:
+    """LessonCandidate из дельты такта. Детерминированно, первый матч."""
+    frame = pre_janus_frame if isinstance(pre_janus_frame, dict) else {}
+    seed = (
+        (thought_state.get("seed") or {})
+        if isinstance(thought_state, dict) else {}
+    )
+    mode = str(frame.get("mode") or seed.get("mode") or "")
+    constraint = str(delta.get("constraint") or "").lower()
+    open_q     = str(delta.get("open") or "").lower()
+
+    if mode in _REFLECTIVE_MODES and "outward action blocked" in constraint:
+        return _LESSON_REFLECTIVE
+    if "недостаточно данных" in open_q or "нет подтверждения" in open_q:
+        return _LESSON_UNVERIFIED
+    if delta.get("contradiction"):
+        return _LESSON_CONTRADICTION
+    if claim_novelty is not None and not claim_added:
+        return _LESSON_COMPRESSION
+    if claim_added and (claim_novelty or 0.0) >= _LESSON_HIGH_NOVELTY:
+        return _LESSON_NOVELTY
+    if mode == "design" and any(m in open_q for m in _LESSON_DESIGN_OPEN_MARKERS):
+        return _LESSON_DESIGN
+    return None
+
+
+def _add_lesson(thought_state: dict, lesson) -> bool:
+    """Добавляет урок: нормализация, дедуп, cap 5. Награда метрик ТОЛЬКО
+    при реальном добавлении: coherence +0.03, novelty +0.03."""
+    if not lesson:
+        return False
+    text = re.sub(r"\s+", " ", str(lesson)).strip()[:THOUGHT_LESSON_MAXLEN]
+    if not text:
+        return False
+    lessons = thought_state.setdefault("lessons", [])
+    if (
+        len(lessons) >= THOUGHT_MAX_LESSONS
+        or _is_near_duplicate_thought(text, lessons)
+    ):
+        return False
+    lessons.append(text)
+    metrics = thought_state.get("metrics")
+    if isinstance(metrics, dict):
+        for key in ("coherence", "novelty"):
+            metrics[key] = round(_clamp01(metrics.get(key, 0.0) + 0.03), 4)
+    return True
+
+
 def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     """Применяет ThoughtDelta: метрики клампятся в [0,1], списки ограничены.
 
@@ -2055,6 +2139,8 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
     элемент реально добавлен (дубли не накручивают уверенность).
     v40.2: поверх дедупа — фильтр семантической новизны claim: парафраз
     имеющегося смысла не добавляется и не получает награды метрик.
+    v41: после применения дельты извлекается LessonCandidate (детерминированно);
+    добавленный урок даёт coherence +0.03, novelty +0.03.
     trace — append-only внутри такта, max THOUGHT_MAX_TRACE записей.
     """
     metrics = thought_state["metrics"]
@@ -2140,6 +2226,12 @@ def apply_thought_delta(thought_state: dict, delta: dict) -> None:
             )[:THOUGHT_FIELD_MAXLEN]
         thought_state["trace"].append(entry)
 
+    # ── v41: урок такта из дельты — детерминированно, ограниченно ────────────
+    _add_lesson(thought_state, _extract_lesson_candidate(
+        thought_state, delta, thought_state.get("seed") or {},
+        claim_added=claim_added, claim_novelty=claim_novelty,
+    ))
+
 
 def compact_thought_state(thought_state: dict) -> dict:
     """Bounded-форма ThoughtState для state["last_thought_state"].
@@ -2173,6 +2265,10 @@ def compact_thought_state(thought_state: dict) -> dict:
             str(c)[:THOUGHT_FIELD_MAXLEN]
             for c in (thought_state.get("constraints") or [])[:THOUGHT_MAX_CONSTRAINTS]
         ],
+        "lessons": [
+            str(l)[:THOUGHT_LESSON_MAXLEN]
+            for l in (thought_state.get("lessons") or [])[:THOUGHT_MAX_LESSONS]
+        ],
         "metrics": {
             k: round(float(v), 4)
             for k, v in (thought_state.get("metrics") or {}).items()
@@ -2189,6 +2285,7 @@ def compact_thought_state(thought_state: dict) -> dict:
 # локальный контекст), артефактный поток пока сохраняется как есть.
 THOUGHT_SUMMARY_MAX_CHARS    = 900
 THOUGHT_SUMMARY_MAX_ITEMS    = 3
+THOUGHT_SUMMARY_MAX_LESSONS  = 2
 THOUGHT_SUMMARY_DELTA_MAXLEN = 160
 
 _THOUGHT_CONTINUITY_LINE = (
@@ -2225,6 +2322,10 @@ def _compact_thought_state_summary(
         if items:
             lines.append(f"{label}:")
             lines.extend(f"- {str(i)[:THOUGHT_FIELD_MAXLEN]}" for i in items)
+    lessons = (thought_state.get("lessons") or [])[-THOUGHT_SUMMARY_MAX_LESSONS:]
+    if lessons:
+        lines.append("lessons:")
+        lines.extend(f"- {str(l)[:THOUGHT_LESSON_MAXLEN]}" for l in lessons)
     trace = thought_state.get("trace") or []
     if trace:
         last = trace[-1]
@@ -3680,6 +3781,7 @@ def conduct(raw_text: str) -> None:
                 "[THOUGHT] tact done: "
                 f"claims={len(state['last_thought_state']['claims'])} "
                 f"open={len(state['last_thought_state']['open'])} "
+                f"lessons={len(state['last_thought_state'].get('lessons') or [])} "
                 f"risk={_tm.get('risk', 0.0):.2f} "
                 f"conf={_tm.get('confidence', 0.0):.2f}"
             )

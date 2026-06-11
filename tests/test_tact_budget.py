@@ -1170,7 +1170,8 @@ class TestSemanticExtraction(unittest.TestCase):
         self.assertEqual(delta["claim"], self._IDENTITY_CLAIM)
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.55)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.55)
+        # v41: 0.05 (claim) + 0.03 (урок «novel claims expand…»)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.58)
 
     def test_contradiction_raises_risk_lowers_confidence(self):
         from core.janus_conductor import compute_thought_delta, apply_thought_delta
@@ -1184,7 +1185,8 @@ class TestSemanticExtraction(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertAlmostEqual(ts["metrics"]["risk"], 0.2)
         self.assertAlmostEqual(ts["metrics"]["confidence"], 0.4)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.4)
+        # v41: -0.1 (contradiction) + 0.03 (урок «contradictory artifacts…»)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], 0.43)
         self.assertTrue(
             any(o.startswith("contradiction:") for o in ts["open"])
         )
@@ -1310,7 +1312,7 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         )
 
     def test_low_novelty_claim_not_added_and_no_reward(self):
-        """Парафраз: claims не растут, confidence/coherence/risk без награды."""
+        """Парафраз: claims не растут, confidence/risk без награды claim-пути."""
         from core.janus_conductor import apply_thought_delta
         ts = self._state()
         apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
@@ -1318,15 +1320,24 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         conf = ts["metrics"]["confidence"]
         coh  = ts["metrics"]["coherence"]
         risk = ts["metrics"]["risk"]
+        nov  = ts["metrics"]["novelty"]
         apply_thought_delta(ts, self._delta(self._PARAPHRASE))
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
         self.assertAlmostEqual(ts["metrics"]["risk"], risk)
-        # Мягкий спад novelty (0.10 − 0.02), без жёсткого наказания
-        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.08)
+        # v41: спад -0.02 (скип) + 0.03 (урок сжатия, единожды);
+        # coherence растёт ТОЛЬКО уроком, не наградой claim-пути
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov - 0.02 + 0.03)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
         # Trace помечает скип, не раздуваясь artifact-телом
         self.assertIn("claim skipped: low novelty", ts["trace"][-1]["reason"])
+        # Повторный скип: урок дедупится → никаких наград вообще
+        coh2 = ts["metrics"]["coherence"]
+        nov2 = ts["metrics"]["novelty"]
+        apply_thought_delta(ts, self._delta(self._PARAPHRASE))
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh2)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], nov2 - 0.02)
 
     def test_rejected_claim_metric_delta_reward_suppressed(self):
         """metric_delta confidence/coherence парафраза подавляется при скипе."""
@@ -1342,7 +1353,8 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         apply_thought_delta(ts, delta)
         self.assertEqual(len(ts["claims"]), 1)
         self.assertAlmostEqual(ts["metrics"]["confidence"], conf)
-        self.assertAlmostEqual(ts["metrics"]["coherence"], coh)
+        # v41: подавленный +0.1 НЕ применён; +0.03 — только урок сжатия
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
 
     def test_rejected_claim_keeps_independent_rewards(self):
         """bash_success/approved награды живут даже при скипе парафраза."""
@@ -1364,11 +1376,13 @@ class TestClaimNoveltyFilter(unittest.TestCase):
         ts = self._state()
         self.assertAlmostEqual(ts["metrics"]["novelty"], 0.0)
         apply_thought_delta(ts, self._delta(self._BASE_CLAIM))
-        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.10)
+        # v41: 0.10 (claim novelty 1.0) + 0.03 (урок high-novelty)
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.13)
         self.assertIn("novelty=1.00,claim_added=true", ts["trace"][-1]["reason"])
         apply_thought_delta(ts, self._delta(self._DIFFERENT))
         self.assertEqual(len(ts["claims"]), 2)
-        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.20)
+        # Урок дедупится → второй прирост только 0.10
+        self.assertAlmostEqual(ts["metrics"]["novelty"], 0.23)
 
     def test_cap_claims_still_seven(self):
         """10 семантически разных claims → cap 7 держится."""
@@ -1407,6 +1421,147 @@ class TestClaimNoveltyFilter(unittest.TestCase):
             [deva for _, deva, _ in jc.FOHAT_CHAIN],
             ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v41: Lesson-слой — детерминированная экстракция уроков из ThoughtState
+# ─────────────────────────────────────────────────────────────────────────────
+class TestThoughtLessons(unittest.TestCase):
+
+    def _state(self, text="спроектируй новую память"):
+        from core.janus_conductor import (
+            _pre_janus_frame, make_thought_seed, make_thought_state,
+        )
+        return make_thought_state(
+            make_thought_seed(text, _pre_janus_frame(text)), grounding=0.5,
+        )
+
+    def _delta(self, **kw):
+        base = {
+            "deva": "Budha", "center": "Head", "rune": "ᛃ", "action": "none",
+            "claim": None, "open": None, "constraint": None,
+            "contradiction": None, "metric_delta": {}, "reason": "test",
+        }
+        base.update(kw)
+        return base
+
+    def test_outward_blocked_in_reflective_mode_creates_lesson(self):
+        from core.janus_conductor import apply_thought_delta, _LESSON_REFLECTIVE
+        ts = self._state()  # mode=design — рефлективный
+        apply_thought_delta(
+            ts, self._delta(constraint="outward action blocked by design"),
+        )
+        self.assertIn(_LESSON_REFLECTIVE, ts["lessons"])
+
+    def test_insufficient_data_open_creates_lesson(self):
+        from core.janus_conductor import apply_thought_delta, _LESSON_UNVERIFIED
+        ts = self._state()
+        apply_thought_delta(
+            ts, self._delta(open="Недостаточно данных для вывода о памяти"),
+        )
+        self.assertIn(_LESSON_UNVERIFIED, ts["lessons"])
+
+    def test_contradiction_creates_lesson(self):
+        from core.janus_conductor import (
+            apply_thought_delta, _LESSON_CONTRADICTION,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(
+            contradiction="artifact denies execution but proposes action",
+        ))
+        self.assertIn(_LESSON_CONTRADICTION, ts["lessons"])
+
+    def test_low_novelty_skip_creates_compression_lesson(self):
+        from core.janus_conductor import apply_thought_delta, _LESSON_COMPRESSION
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(
+            claim="Структура памяти обеспечивает гибкость инвариантов.",
+        ))
+        apply_thought_delta(ts, self._delta(
+            claim="Структуры памяти дают гибкость инвариантам.",
+        ))
+        self.assertEqual(len(ts["claims"]), 1)
+        self.assertIn(_LESSON_COMPRESSION, ts["lessons"])
+
+    def test_design_abstract_open_creates_design_lesson(self):
+        from core.janus_conductor import apply_thought_delta, _LESSON_DESIGN
+        ts = self._state()  # mode=design
+        apply_thought_delta(ts, self._delta(
+            open="Решение слишком абстрактно, нет конкретики",
+        ))
+        self.assertIn(_LESSON_DESIGN, ts["lessons"])
+
+    def test_lessons_dedup(self):
+        from core.janus_conductor import (
+            apply_thought_delta, _add_lesson, _LESSON_CONTRADICTION,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(contradiction="противоречие А"))
+        apply_thought_delta(ts, self._delta(contradiction="противоречие Б"))
+        self.assertEqual(ts["lessons"].count(_LESSON_CONTRADICTION), 1)
+        self.assertFalse(_add_lesson(ts, _LESSON_CONTRADICTION))
+
+    def test_lessons_cap_five(self):
+        from core.janus_conductor import _add_lesson, THOUGHT_MAX_LESSONS
+        ts = self._state()
+        for i in range(8):
+            _add_lesson(ts, f"урок номер {i} о разных паттернах")
+        self.assertEqual(len(ts["lessons"]), THOUGHT_MAX_LESSONS)
+        self.assertEqual(THOUGHT_MAX_LESSONS, 5)
+
+    def test_lesson_reward_only_on_add(self):
+        from core.janus_conductor import _add_lesson
+        ts = self._state()
+        coh = ts["metrics"]["coherence"]
+        self.assertTrue(_add_lesson(ts, "урок альфа"))
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+        self.assertFalse(_add_lesson(ts, "урок альфа"))
+        self.assertAlmostEqual(ts["metrics"]["coherence"], coh + 0.03)
+
+    def test_summary_includes_max_two_lessons(self):
+        from core.janus_conductor import (
+            _compact_thought_state_summary, THOUGHT_SUMMARY_MAX_CHARS,
+        )
+        ts = self._state()
+        ts["lessons"] = [f"LSN_{i} паттерн такта" for i in range(4)]
+        summary = _compact_thought_state_summary(ts)
+        self.assertNotIn("LSN_0", summary)
+        self.assertNotIn("LSN_1", summary)
+        self.assertIn("LSN_2", summary)
+        self.assertIn("LSN_3", summary)
+        self.assertLessEqual(len(summary), THOUGHT_SUMMARY_MAX_CHARS)
+
+    def test_last_thought_state_lessons_bounded_no_artifacts(self):
+        from core.janus_conductor import (
+            apply_thought_delta, compact_thought_state, THOUGHT_LESSON_MAXLEN,
+        )
+        ts = self._state()
+        apply_thought_delta(ts, self._delta(
+            contradiction="BIGBODYMARKER " * 50,
+        ))
+        ts["lessons"].append("x" * 1000)
+        compact = compact_thought_state(ts)
+        self.assertIn("lessons", compact)
+        for lesson in compact["lessons"]:
+            self.assertLessEqual(len(lesson), THOUGHT_LESSON_MAXLEN)
+        # Урок — фиксированная формулировка, тело артефакта не утекает
+        self.assertNotIn("BIGBODYMARKER", json.dumps(compact["lessons"]))
+
+    def test_lesson_layer_no_llm_chain_dyad_unchanged(self):
+        import inspect
+        import core.janus_conductor as jc
+        with patch.object(jc, "_http_post") as http_post:
+            ts = self._state()
+            lesson = jc._extract_lesson_candidate(
+                ts, self._delta(contradiction="x"), ts["seed"],
+            )
+            jc._add_lesson(ts, lesson)
+        http_post.assert_not_called()
+        self.assertEqual(
+            [deva for _, deva, _ in jc.FOHAT_CHAIN],
+            ["Shani", "Chandra", "Shukra", "Mangala", "Budha", "Rahu"],
+        )
+        self.assertNotIn("lesson", inspect.getsource(jc.janus_dyad))
 
 
 if __name__ == "__main__":
