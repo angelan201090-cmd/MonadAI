@@ -7,7 +7,7 @@
 #   8081 — УМ       : Phi-4-mini-instruct                  IQ4_NL  ctx=4096
 #   8082 — СЕРДЦЕ   : Gemma-3-4B-it-heretic               IQ4_NL  ctx=4096
 #   8083 — ТЕЛО     : Granite-4.0-H-Micro                 Q6_K_XL ctx=4096
-#   8084 — ПЕРСОНА+ТЕНЬ : Gemma-4-E4B-Abliterated         IQ4_XS  ctx=4096 (shared)
+#   8084 — ПЕРСОНА+ТЕНЬ : Llama-3.3-8B absolute heresy    IQ4_XS  ctx=4096 (shared)
 #   8086 — СИНТЕЗ   : SmolLM3-3B                          IQ4_NL  ctx=8192
 #   13305— ПОДСОЗНАНИЕ: nomic-embed-text-v1-GGUF (lemond/llamacpp)
 # =====================================================================
@@ -23,8 +23,8 @@ DANCEFLOOR="/mnt/dancefloor"
 MODEL_UM="$MODELS_DIR/microsoft_Phi-4-mini-instruct-IQ4_NL.gguf"
 MODEL_SERDCE="$MODELS_DIR/gemma-3-4b-it-heretic-iq4_nl-imat.gguf"
 MODEL_TELO="$MODELS_DIR/granite-4.0-h-micro-UD-Q6_K_XL.gguf"
-# ПЕРСОНА и ТЕНЬ делят один llama-server на 8084 (shared Gemma) — экономия RAM
-MODEL_PERSONA="$MODELS_DIR/Gemma-4-E4B-Abliterated.IQ4_XS.gguf"
+# ПЕРСОНА и ТЕНЬ делят один llama-server на 8084 (shared Llama-3.3-8B absolute heresy) — экономия RAM
+MODEL_PERSONA="/home/angelan/models/monadaAI/Llama-3.3-8B-Instruct-128K-absolute-heresy.IQ4_XS.gguf"
 MODEL_SINTEZ="$MODELS_DIR/SmolLM3-3B-IQ4_NL.gguf"
 
 echo "[ᛉ] Аннигиляция старых процессов..."
@@ -182,7 +182,7 @@ else
 fi
 
 # ── Запуск Януса ─────────────────────────────────────────────────────────────
-# ПЕРСОНА и ТЕНЬ обслуживаются ОДНИМ llama-server на 8084 (shared Gemma).
+# ПЕРСОНА и ТЕНЬ обслуживаются ОДНИМ llama-server на 8084 (shared Llama-3.3-8B absolute heresy).
 # Отдельный сервер 8085 не поднимается — SHADOW_URL в janus_conductor.py указывает на 8084.
 if [ -f "$MODEL_PERSONA" ]; then
     start_server "PERSONA" 8084 "$MODEL_PERSONA" 4096
@@ -210,7 +210,7 @@ echo " -> [OK] inbox_watcher pid=$!"
 echo ""
 echo "[ᚹ] ГЕПТАРХИЯ АКТИВНА"
 echo "    УМ      :8081  СЕРДЦЕ   :8082  ТЕЛО    :8083"
-echo "    PERSONA+SHADOW :8084 shared Gemma   СИНТЕЗ  :8086"
+echo "    PERSONA+SHADOW :8084 shared Llama-3.3-8B absolute heresy   СИНТЕЗ  :8086"
 echo "    ПОДСОЗНАНИЕ :13305 (lemond/nomic-embed)"
 echo "    ПРИСУТСТВИЕ :inbox_watcher (Proton Bridge)"
 echo ""
