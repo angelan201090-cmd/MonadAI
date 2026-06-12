@@ -57,7 +57,7 @@ class TestTactBudget(unittest.TestCase):
         from core.janus_conductor import _pre_janus_frame
 
         body_task = _pre_janus_frame("кто ты?")["micro_tasks"]["Body"]
-        self.assertIn("MonadaAI", body_task)
+        self.assertIn("MirAI", body_task)
         self.assertIn("software/AI system", body_task)
         self.assertIn("Monada-Hardcore", body_task)
         self.assertIn("not a generic esoteric Monad", body_task)
@@ -72,12 +72,12 @@ class TestTactBudget(unittest.TestCase):
         frame = _pre_janus_frame("кто ты?")
         self.assertEqual(
             frame["identity_anchor"],
-            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "MirAI is a local multi-node AI system running Monada-Hardcore; "
             "not a human personality, not alive, not a generic esoteric Monad; "
             "it is a software/AI system with local roles.",
         )
         for task in frame["micro_tasks"].values():
-            self.assertIn("MonadaAI", task)
+            self.assertIn("MirAI", task)
             self.assertIn("software/AI system", task)
             self.assertIn("Monada-Hardcore", task)
             self.assertIn("not a generic esoteric Monad", task)
@@ -114,14 +114,14 @@ class TestTactBudget(unittest.TestCase):
         from core.janus_conductor import _strip_identity_contamination
 
         dirty = (
-            "MonadaAI — программная система.\n"
+            "MirAI — программная система.\n"
             "/home/angelan/data/Monada-Hardcore\n"
             "/mnt/dancefloor/field_state.json\n"
             "ports RAM bash consciousness logs audit find\n"
             "Локальные роли образуют многоузловую архитектуру."
         )
         result = _strip_identity_contamination(dirty, "ты личность?")
-        self.assertIn("MonadaAI", result)
+        self.assertIn("MirAI", result)
         self.assertIn("Локальные роли", result)
         for marker in (
             "/home/", "/mnt/", "field_state.json", "ports", "RAM",
@@ -206,10 +206,10 @@ class TestTactBudget(unittest.TestCase):
         from core.janus_conductor import _strip_outward_action_proposals
 
         result = _strip_outward_action_proposals(
-            "Я — MonadaAI.\n\nЗапустить bash-скрипт /home/angelan/check.sh.",
+            "Я — MirAI.\n\nЗапустить bash-скрипт /home/angelan/check.sh.",
             "в режиме самонаблюдения внешние действия не запрашивались",
         )
-        self.assertIn("Я — MonadaAI.", result)
+        self.assertIn("Я — MirAI.", result)
         self.assertIn(
             "в режиме самонаблюдения внешние действия не запрашивались",
             result,
@@ -224,12 +224,12 @@ class TestTactBudget(unittest.TestCase):
         )
 
         result = _finalize_synthesis_for_mode(
-            "Я — MonadaAI, локальная система архитектуры Monada-Hardcore.",
-            "Persona описывает MonadaAI.",
+            "Я — MirAI, локальная система архитектуры Monada-Hardcore.",
+            "Persona описывает MirAI.",
             "",
             _pre_janus_frame("кто ты?"),
         )
-        self.assertIn("MonadaAI", result)
+        self.assertIn("MirAI", result)
         self.assertIn("Monada-Hardcore", result)
 
     def test_introspection_final_filters_actions_and_falls_back_to_persona(self):
@@ -240,11 +240,11 @@ class TestTactBudget(unittest.TestCase):
 
         result = _finalize_synthesis_for_mode(
             "Запустить bash-скрипт /home/angelan/check.sh для RAM и портов.",
-            "Я — MonadaAI внутри Monada-Hardcore.",
+            "Я — MirAI внутри Monada-Hardcore.",
             "",
             _pre_janus_frame("кто ты?"),
         )
-        self.assertEqual(result, "Я — MonadaAI внутри Monada-Hardcore.")
+        self.assertEqual(result, "Я — MirAI внутри Monada-Hardcore.")
         for forbidden in ("RAM", "порт", "bash", "скрипт", "/home/"):
             self.assertNotIn(forbidden, result)
 
@@ -255,13 +255,13 @@ class TestTactBudget(unittest.TestCase):
         )
 
         result = _finalize_synthesis_for_mode(
-            "Я — MonadaAI внутри Monada-Hardcore.\n\n"
+            "Я — MirAI внутри Monada-Hardcore.\n\n"
             "Нужно проверить BASH_FACTS, пути и имена файлов, чтобы убедиться.",
-            "Persona описывает MonadaAI внутри Monada-Hardcore.",
+            "Persona описывает MirAI внутри Monada-Hardcore.",
             "",
             _pre_janus_frame("кто ты?"),
         )
-        self.assertEqual(result, "Я — MonadaAI внутри Monada-Hardcore.")
+        self.assertEqual(result, "Я — MirAI внутри Monada-Hardcore.")
         for forbidden in (
             "BASH_FACTS", "пути", "имена файлов", "файлы",
             "убедиться", "проверить", "проверка",
@@ -320,6 +320,35 @@ class TestTactBudget(unittest.TestCase):
                       "Фаза Персоны должна делать отдельный вызов на PERSONA_URL")
         self.assertIn("_http_post(SHADOW_URL", src,
                       "Фаза Тени должна делать отдельный вызов на SHADOW_URL")
+
+    def test_persona_shadow_runtime_configuration(self):
+        """Shared model/port remain fixed; Shadow sampling is more exploratory."""
+        import re
+        from pathlib import Path
+        import core.janus_conductor as jc
+
+        launcher = Path("/home/angelan/data/Monada-Hardcore/monada_on_geptarchy.sh").read_text()
+        expected_models = {
+            "MODEL_UM": "$MODELS_DIR/microsoft_Phi-4-mini-instruct-IQ4_NL.gguf",
+            "MODEL_SERDCE": "$MODELS_DIR/gemma-3-4b-it-heretic-iq4_nl-imat.gguf",
+            "MODEL_TELO": "$MODELS_DIR/granite-4.0-h-micro-UD-Q6_K_XL.gguf",
+            "MODEL_PERSONA": "/home/angelan/models/monadaAI/Llama-3.3-8B-Instruct-128K-absolute-heresy.IQ4_XS.gguf",
+            "MODEL_SINTEZ": "$MODELS_DIR/SmolLM3-3B-IQ4_NL.gguf",
+        }
+        configured_models = dict(re.findall(
+            r'^(MODEL_(?:UM|SERDCE|TELO|PERSONA|SINTEZ))="([^"]+)"$',
+            launcher,
+            re.MULTILINE,
+        ))
+
+        self.assertEqual(configured_models, expected_models)
+        self.assertIn('start_server "PERSONA" 8084 "$MODEL_PERSONA" 4096', launcher)
+        self.assertIn("lemonade load nomic-embed-text-v1-GGUF", launcher)
+        self.assertEqual(jc.PERSONA_URL, jc.SHADOW_URL)
+        self.assertIn(":8084/", jc.PERSONA_URL)
+        self.assertEqual(jc.PERSONA_TEMPERATURE, 0.15)
+        self.assertEqual(jc.SHADOW_TEMPERATURE, 0.25)
+        self.assertGreater(jc.SHADOW_TEMPERATURE, jc.PERSONA_TEMPERATURE)
 
     def test_triada_plus_dyad_max_9_calls(self):
         """Совокупный бюджет: 6 (Триада/спираль) + 3 (Диада) = 9 вызовов."""
@@ -656,7 +685,7 @@ class TestThoughtState(unittest.TestCase):
         self.assertFalse(seed["action_authorized"])
         self.assertFalse(seed["bash_authorized"])
         self.assertEqual(set(seed["micro_tasks"]), {"Head", "Heart", "Body"})
-        self.assertIn("MonadaAI", seed["micro_tasks"]["Head"])
+        self.assertIn("MirAI", seed["micro_tasks"]["Head"])
 
     def test_seed_fallback_without_pre_janus(self):
         """Fallback ThoughtSeed детерминирован и создаётся без PRE-JANUS."""
@@ -725,11 +754,11 @@ class TestThoughtState(unittest.TestCase):
         self.assertIn("bash_success", delta["reason"])
 
     def test_introspection_identity_delta(self):
-        """Introspection + MonadaAI-артефакт без внешних действий → coherence/confidence."""
+        """Introspection + MirAI artifact without outward actions boosts coherence."""
         from core.janus_conductor import compute_thought_delta
         delta = compute_thought_delta(
             deva="Chandra", center="Heart",
-            artifact="MonadaAI — локальная система Monada-Hardcore; роль Сердца внутренняя.",
+            artifact="MirAI — локальная система Monada-Hardcore; роль Сердца внутренняя.",
             rune="ᛃ", action="none",
             mode="introspection", diagnostic_authorized=False,
         )
@@ -1102,7 +1131,7 @@ class TestThoughtCarryingOctave(unittest.TestCase):
 class TestSemanticExtraction(unittest.TestCase):
 
     _IDENTITY_CLAIM = (
-        "MonadaAI — локальная многоузловая ИИ-система в архитектуре "
+        "MirAI — локальная многоузловая ИИ-система в архитектуре "
         "Monada-Hardcore."
     )
 
@@ -2416,14 +2445,15 @@ class TestGlyphPressure(unittest.TestCase):
 
 
 class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
-    """v47: канонический identity-ответ + firewall stale/системного контекста."""
+    """v47/v50-H: MirAI canonical identity plus legacy MonadaAI alias."""
 
     # ── PART A: canonical identity answers ──────────────────────────────────
     def test_identity_canonical_program_answer(self):
         from core.janus_conductor import _identity_canonical_answer
         ans = _identity_canonical_answer("ты программа?")
         self.assertTrue(ans.startswith("Да, я программа."))
-        self.assertIn("MonadaAI", ans)
+        self.assertIn("MirAI", ans)
+        self.assertNotIn("MonadaAI", ans)
         self.assertIn("Monada-Hardcore", ans)
         self.assertLessEqual(len(ans), 420)
 
@@ -2431,20 +2461,20 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
         from core.janus_conductor import _identity_canonical_answer
         ans = _identity_canonical_answer("ты живая?")
         self.assertTrue(ans.startswith("Нет, я не живое существо."))
-        self.assertIn("MonadaAI", ans)
+        self.assertIn("MirAI", ans)
         self.assertIn("Monada-Hardcore", ans)
 
     def test_identity_canonical_personality_answer(self):
         from core.janus_conductor import _identity_canonical_answer
         ans = _identity_canonical_answer("ты личность?")
         self.assertTrue(ans.startswith("Нет, я не человеческая личность."))
-        self.assertIn("MonadaAI", ans)
+        self.assertIn("MirAI", ans)
 
     def test_identity_canonical_system_or_personality_answer(self):
         from core.janus_conductor import _identity_canonical_answer
         ans = _identity_canonical_answer("ты система или личность?")
         self.assertTrue(ans.startswith("Система."))
-        self.assertIn("MonadaAI", ans)
+        self.assertIn("MirAI", ans)
         self.assertIn("Monada-Hardcore", ans)
 
     def test_identity_canonical_never_mentions_roles_or_system_status(self):
@@ -2458,7 +2488,7 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
     # ── PART B: identity final override ─────────────────────────────────────
     def test_identity_final_heart_offline_replaced(self):
         from core.janus_conductor import _enforce_identity_final
-        dirty = "MonadaAI работает, но Heart offline и недоступен."
+        dirty = "MirAI работает, но Heart offline и недоступен."
         out = _enforce_identity_final(dirty, "ты живая?")
         self.assertTrue(out.startswith("Нет, я не живое существо."))
         self.assertNotIn("Heart", out)
@@ -2466,40 +2496,50 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
 
     def test_identity_final_role_self_replaced(self):
         from core.janus_conductor import _enforce_identity_final
-        dirty = "Я Chandra, узел Heart, центр Body системы MonadaAI."
+        dirty = "Я Chandra, узел Heart, центр Body системы MirAI."
         out = _enforce_identity_final(dirty, "кто ты?")
         self.assertNotIn("Chandra", out)
         self.assertNotIn("Heart", out)
         self.assertNotIn("Body", out)
-        self.assertIn("MonadaAI", out)
+        self.assertIn("MirAI", out)
 
     def test_identity_final_insufficient_data_for_life_replaced(self):
         from core.janus_conductor import _enforce_identity_final
-        dirty = "MonadaAI: недостаточно данных для подтверждения жизни."
+        dirty = "MirAI: недостаточно данных для подтверждения жизни."
         out = _enforce_identity_final(dirty, "ты живая?")
         self.assertTrue(out.startswith("Нет, я не живое существо."))
         self.assertNotIn("недостаточно данных", out.lower())
 
-    def test_identity_final_clean_answer_preserved(self):
+    def test_identity_final_clean_mirai_answer_preserved(self):
         from core.janus_conductor import _enforce_identity_final
         clean = (
-            "MonadaAI — программная многоузловая AI-система Monada-Hardcore; "
+            "MirAI — программная многоузловая AI-система Monada-Hardcore; "
             "это система, а не личность."
         )
         out = _enforce_identity_final(clean, "кто ты?")
         self.assertEqual(out, clean)
 
-    def test_identity_final_missing_monadaai_replaced(self):
+    def test_identity_final_clean_legacy_alias_preserved(self):
+        from core.janus_conductor import _enforce_identity_final
+        legacy = (
+            "MonadaAI — программная многоузловая AI-система Monada-Hardcore; "
+            "это система, а не личность."
+        )
+        out = _enforce_identity_final(legacy, "кто ты?")
+        self.assertEqual(out, legacy)
+
+    def test_identity_final_missing_identity_name_replaced(self):
         from core.janus_conductor import _enforce_identity_final
         dirty = "Я просто помощник."
         out = _enforce_identity_final(dirty, "кто ты?")
-        self.assertIn("MonadaAI", out)
+        self.assertIn("MirAI", out)
+        self.assertNotIn("MonadaAI", out)
 
     def test_identity_final_missing_monada_hardcore_replaced(self):
         from core.janus_conductor import _enforce_identity_final
-        dirty = "MonadaAI — локальная AI-система, не личность."
+        dirty = "MirAI — локальная AI-система, не личность."
         out = _enforce_identity_final(dirty, "кто ты?")
-        self.assertIn("MonadaAI", out)
+        self.assertIn("MirAI", out)
         self.assertIn("Monada-Hardcore", out)
         self.assertNotEqual(out, dirty)
 
@@ -2507,7 +2547,7 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
     def test_identity_context_firewall_strips_system_lines(self):
         from core.janus_conductor import _identity_context_firewall
         ctx = "\n".join([
-            "MonadaAI is a local multi-node AI system running Monada-Hardcore.",
+            "MirAI is a local multi-node AI system running Monada-Hardcore.",
             "ты живая?",
             "[Heart/Chandra]: Heart вне сети",
             "free -h: Mem 95%",
@@ -2530,7 +2570,7 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
     def test_identity_context_firewall_preserves_anchor_and_question(self):
         from core.janus_conductor import _identity_context_firewall
         anchor = (
-            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "MirAI is a local multi-node AI system running Monada-Hardcore; "
             "not a human personality, not alive, not a generic esoteric Monad; "
             "it is a software AI system with local roles."
         )
@@ -2539,6 +2579,15 @@ class TestV47CanonicalIdentityAndFirewall(unittest.TestCase):
         self.assertIn(anchor, out)
         self.assertIn("ты живая?", out)
         self.assertNotIn("bash", out.lower())
+
+    def test_identity_context_firewall_preserves_legacy_alias(self):
+        from core.janus_conductor import _identity_context_firewall
+        legacy = (
+            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "not a human personality, not alive."
+        )
+        out = _identity_context_firewall(legacy, "кто ты?")
+        self.assertEqual(out, legacy)
 
     # ── PART D: diagnostic stale firewall ───────────────────────────────────
     def test_diagnostic_stale_8083_removed_when_listen(self):
@@ -3245,7 +3294,7 @@ class TestV49BMuslLensQuarantine(unittest.TestCase):
         import inspect
         import core.janus_conductor as jc
         final = jc._enforce_identity_final("я живая монада", "кто ты?")
-        self.assertIn("MonadaAI", final)
+        self.assertIn("MirAI", final)
         self.assertIn("Monada-Hardcore", final)
         src = inspect.getsource(jc._enforce_identity_final)
         self.assertNotIn("lens", src.lower())

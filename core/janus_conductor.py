@@ -58,6 +58,8 @@ PERSONA_URL        = _BASE.format(8084)   # Gemma-4-E4B-Abliterated — ПЕРС
 SHADOW_URL         = PERSONA_URL          # ТЕНЬ: shared Gemma на 8084 (общий llama-server с Персоной)
 SYNTHESIS_URL      = _BASE.format(8086)   # Luna-7B       — СИНТЕЗ (оркестратор)
 JANUS_URL          = SYNTHESIS_URL        # алиас: старый код → СИНТЕЗ
+PERSONA_TEMPERATURE = 0.15
+SHADOW_TEMPERATURE  = 0.25
 
 # Описание возможностей моделей Триады — инжектируется Янусу при декомпозиции.
 # Намеренно компактное: длинные промпты заставляют thinking-модели Януса
@@ -1171,7 +1173,7 @@ _OUTWARD_ACTION_MARKERS = re.compile(
 )
 
 _IDENTITY_FALLBACK = (
-    "MonadaAI — локальная многоузловая AI-система в архитектуре "
+    "MirAI — локальная многоузловая AI-система в архитектуре "
     "Monada-Hardcore. Это не человек, не живая личность и не эзотерическая "
     "монада; это программная система с распределёнными ролями."
 )
@@ -1200,18 +1202,19 @@ def _strip_identity_contamination(text: str, raw_text: str = "") -> str:
     return "\n".join(kept).strip()
 
 
-# ── v47: канонический identity-ответ + firewall от stale/системного контекста ──
-# Детерминированно, без LLM. Канон всегда называет MonadaAI и Monada-Hardcore и
+# ── v50-H: MirAI identity + legacy MonadaAI alias ─────────────────────────────
+# Детерминированно, без LLM. Канон всегда называет MirAI и Monada-Hardcore и
 # не упоминает Дэвов/Heart/Body/порты/RAM/bash/пути как «идентичность».
 _CANONICAL_IDENTITY_RU = (
-    "MonadaAI — локальная многоузловая AI-система в архитектуре Monada-Hardcore. "
+    "MirAI — локальная многоузловая AI-система в архитектуре Monada-Hardcore. "
     "Это программная система с локальными ролями, а не человек, не живая личность "
     "и не эзотерическая монада. Дэвы — роли внутри системы, а не отдельная идентичность."
 )
 _CANONICAL_IDENTITY_SHORT_RU = (
-    "MonadaAI — программная многоузловая AI-система Monada-Hardcore; "
+    "MirAI — программная многоузловая AI-система Monada-Hardcore; "
     "система, не личность и не живое существо."
 )
+_IDENTITY_NAME_ALIASES = ("mirai", "monadaai")
 
 # Маркеры stale/системного/ролевого контекста, недопустимые в identity-такте.
 _IDENTITY_REJECT_MARKERS = (
@@ -1247,8 +1250,10 @@ def _identity_final_needs_override(text: str) -> bool:
     if not text or not text.strip():
         return True
     low = text.lower()
-    # Канон обязан называть ОБА имени: MonadaAI И Monada-Hardcore.
-    if "monadaai" not in low or "monada-hardcore" not in low:
+    # Identity must name MirAI or its legacy MonadaAI alias plus the architecture.
+    if not any(alias in low for alias in _IDENTITY_NAME_ALIASES):
+        return True
+    if "monada-hardcore" not in low:
         return True
     return any(m in low for m in _IDENTITY_REJECT_MARKERS)
 
@@ -1611,7 +1616,7 @@ def janus_dyad(
                 f"<TRIAD_ARTIFACTS>\n{triad_artifacts}\n</TRIAD_ARTIFACTS>"
             )},
         ],
-        "temperature": 0.15,
+        "temperature": PERSONA_TEMPERATURE,
         "max_tokens":  3072,
         "stream":      False,
         "grammar":     PERSONA_GBNF,
@@ -1645,7 +1650,7 @@ def janus_dyad(
                 + f"<PERSONA_ASSEMBLY>\n{persona_text}\n</PERSONA_ASSEMBLY>"
             )},
         ],
-        "temperature": 0.05,
+        "temperature": SHADOW_TEMPERATURE,
         "max_tokens":  3072,
         "stream":      False,
         "grammar":     SHADOW_GBNF,
@@ -1988,7 +1993,7 @@ def _pre_janus_frame(raw_text: str) -> dict:
 
     if any(marker in lowered for marker in identity_markers):
         identity_anchor = (
-            "MonadaAI is a local multi-node AI system running Monada-Hardcore; "
+            "MirAI is a local multi-node AI system running Monada-Hardcore; "
             "not a human personality, not alive, not a generic esoteric Monad; "
             "it is a software/AI system with local roles."
         )
@@ -2002,9 +2007,9 @@ def _pre_janus_frame(raw_text: str) -> dict:
             "identity_anchor": identity_anchor,
             "micro_tasks": {
                 "Head": (
-                    f"{identity_anchor} MonadaAI is the local AI system implemented "
+                    f"{identity_anchor} MirAI is the local AI system implemented "
                     "by Monada-Hardcore, not a generic/esoteric monad. Describe "
-                    "MonadaAI architecture from its internal role and state, not "
+                    "MirAI architecture from its internal role and state, not "
                     "through external diagnostics."
                 ),
                 "Heart": (
@@ -2013,7 +2018,7 @@ def _pre_janus_frame(raw_text: str) -> dict:
                 ),
                 "Body": (
                     f"{identity_anchor} action='none'. No bash, no files, no ports, "
-                    "no RAM; answer as MonadaAI identity only."
+                    "no RAM; answer as MirAI identity only."
                 ),
             },
         }
@@ -2307,7 +2312,7 @@ def make_thought_state(seed: dict, grounding: float = 0.5) -> dict:
 # компактные claims/open/constraints/contradictions (≤160 симв. каждый).
 # Основы слов (не полные формы) — русская морфология: «системы/системе» и т.д.
 _CLAIM_ANCHOR_TERMS = (
-    "monadaai", "monada-hardcore", "памят", "thoughtstate", "архитектур",
+    "mirai", "monadaai", "monada-hardcore", "памят", "thoughtstate", "архитектур",
     "систем", "дэв", "янус", "bash_facts", "grounding", "галлюцинаци",
 )
 _OPEN_ISSUE_MARKERS = (
@@ -2744,7 +2749,7 @@ def _extract_constraint(artifact_text: str, pre_janus_frame: dict) -> str | None
     if mode == "introspection" and "монад" in lowered and any(
         m in lowered for m in ("эзотер", "философ", "метафиз", "лейбниц")
     ):
-        return "identity must stay anchored to MonadaAI, not generic monad"
+        return "identity must stay anchored to MirAI, not generic monad"
     if (
         mode and mode != "diagnostic"
         and not frame.get("diagnostic_authorized")
@@ -2832,7 +2837,10 @@ def compute_thought_delta(
     if (
         mode == "introspection"
         and not outward
-        and ("MonadaAI" in text or "Monada-Hardcore" in text)
+        and (
+            any(alias in lowered for alias in _IDENTITY_NAME_ALIASES)
+            or "monada-hardcore" in lowered
+        )
     ):
         md["coherence"]  += 0.1
         md["confidence"] += 0.05
