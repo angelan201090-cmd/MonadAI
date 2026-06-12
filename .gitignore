@@ -45,3 +45,5 @@ converter-env/
 
 # OS
 .DS_Store
+
+inquiry_store.json
