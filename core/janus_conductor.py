@@ -3924,6 +3924,23 @@ def conduct(raw_text: str) -> None:
     _early_pre_janus = (
         _pre_janus_frame(raw_text) if PRE_JANUS_ENABLED else None
     )
+    # ── v51-A: OPEN_INQUIRY — наблюдение conceptual/introspection-вопроса ──────
+    # Матчит/создаёт долгоживущую инквайри и готовит observational-реактивацию.
+    # Полностью изолировано: не меняет коллапс, не трогает authority/BASH_FACTS.
+    _inquiry = None
+    _inquiry_reactivation = ""
+    try:
+        import core.inquiry_store as _inq_store
+        _inquiry, _inquiry_reactivation = _inq_store.observe(
+            raw_text, frame=_early_pre_janus, cycle=int(state.get("cycle", 0))
+        )
+        if _inquiry is not None:
+            _sys_log(
+                f"🜂 OPEN_INQUIRY {_inquiry.get('id')} "
+                f"[{_inquiry.get('dominant_archetype')}] touches={_inquiry.get('touches')}"
+            )
+    except Exception:
+        _inquiry, _inquiry_reactivation = None, ""
     identity_low_grounding = (
         _grounding < 0.50
         and _identity_low_grounding_allowed(_early_pre_janus)
@@ -4106,6 +4123,12 @@ def conduct(raw_text: str) -> None:
 
     # Компактная ссылка на проект — полный manifest только для Body (bash)
     shared_ctx += f"\n[ROOT]: {SOURCE_DIR}\n"
+
+    # ── v51-A: реактивация OPEN_INQUIRY — ТОЛЬКО observational shared_ctx ──────
+    # Никогда не попадает в BASH_FACTS и не авторизует действия (это просто текст
+    # памяти, проходящий те же v49-F/v50-G фильтры, что и остальной shared_ctx).
+    if _inquiry_reactivation:
+        shared_ctx += "\n" + _inquiry_reactivation + "\n"
 
     # ── SOC: порядок срабатывания центров ─────────────────────────────────────
     ready_centers = soc.ready()
@@ -5264,6 +5287,25 @@ def conduct(raw_text: str) -> None:
             import dancefloor_save as _ds
             _ds.main()
             _sys_log("ᛇ Авто-Пралайя: кристалл сохранён в персистент")
+        except Exception:
+            pass
+
+    # ── v51-A: OPEN_INQUIRY — накопление ссылок в конце такта ─────────────────
+    # best_answer только из непустого успешного финального синтеза (не fallback,
+    # не continue). lessons/archetypes/glyphs/evidence — ссылки и счётчики, без сырья.
+    if _inquiry is not None:
+        try:
+            _final_for_inq = (
+                synthesis if (synthesis and not retry_needed and not _can_continue
+                              and synthesis != _IDENTITY_FALLBACK) else ""
+            )
+            _inq_store.accumulate(
+                _inquiry,
+                final_answer=_final_for_inq,
+                last_thought_state=state.get("last_thought_state"),
+                evidence=locals().get("_evidence_ledger"),
+                cycle=int(state.get("cycle", 0)),
+            )
         except Exception:
             pass
 
